@@ -230,6 +230,7 @@ name = "cappella"
 version = "0.0.0"
 dependencies = [
  "gstreamer",
+ "gstreamer-sys",
  "serde",
  "serde_json",
  "tauri",

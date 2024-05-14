@@ -1,9 +1,10 @@
 import {
   CaretRightOutlined,
-  FastBackwardOutlined,
-  FastForwardOutlined,
-  PauseOutlined
+  PauseOutlined,
+  StepBackwardOutlined,
+  StepForwardOutlined
 } from '@ant-design/icons';
+import { invoke } from '@tauri-apps/api';
 import { Button, Col, Flex, Row, Slider } from 'antd';
 
 function App() {
@@ -12,10 +13,26 @@ function App() {
       <Row gutter={[8, 8]} align="middle">
         <Col flex="none">
           <Flex gap="small" wrap="wrap">
-            <Button type="primary" shape="circle" size="large" icon={<FastBackwardOutlined />} />
-            <Button type="primary" shape="circle" size="large" icon={<PauseOutlined />} />
-            <Button type="primary" shape="circle" size="large" icon={<CaretRightOutlined />} />
-            <Button type="primary" shape="circle" size="large" icon={<FastForwardOutlined />} />
+            <Button type="primary" shape="circle" size="large" icon={<StepBackwardOutlined />} />
+            <Button
+              type="primary"
+              shape="circle"
+              size="large"
+              icon={<PauseOutlined />}
+              onClick={(_) => invoke('pause')}
+            />
+            <Button
+              type="primary"
+              shape="circle"
+              size="large"
+              icon={<CaretRightOutlined />}
+              onClick={(_) =>
+                invoke('play', {
+                  uri: 'file:///home/misha/Musique/Boy Meets Girl/Boy Meets Girl - Waiting For A Star To Fall.mp3'
+                })
+              }
+            />
+            <Button type="primary" shape="circle" size="large" icon={<StepForwardOutlined />} />
           </Flex>
         </Col>
         <Col flex="auto">
