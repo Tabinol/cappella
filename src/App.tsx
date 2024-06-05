@@ -4,7 +4,7 @@ import {
   StepBackwardOutlined,
   StepForwardOutlined
 } from '@ant-design/icons';
-import { invoke } from '@tauri-apps/api';
+import { invoke } from '@tauri-apps/api/core';
 import { Button, Col, Flex, Row, Slider } from 'antd';
 
 function App() {

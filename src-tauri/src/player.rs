@@ -13,24 +13,13 @@ pub(crate) enum Command {
 
 #[derive(Debug)]
 pub(crate) struct Player {
-    streamer: Option<Streamer>,
+    streamer: Streamer,
 }
 
 impl Player {
-    fn new() -> Self {
-        Self { streamer: None }
-    }
-
-    pub(crate) fn instance() -> &'static mut Player {
-        static mut PLAYER: Option<Player> = None;
-
-        // Always in the main thread
-        unsafe {
-            if PLAYER.is_none() {
-                PLAYER = Some(Self::new())
-            }
-
-            PLAYER.as_mut().unwrap()
+    pub(crate) fn new() -> Self {
+        Self {
+            streamer: Streamer::new(),
         }
     }
 
@@ -50,7 +39,7 @@ impl Player {
             return;
         }
 
-        Streamer::start(app_handle, uri.to_owned());
+        self.streamer.start(app_handle, uri);
     }
 
     fn pause(&mut self) {
@@ -70,27 +59,21 @@ impl Player {
             streamer.send(streamer::Message::StopSync);
             streamer.wait_until_end();
         }
-
-        self.set_streamer_status_off();
     }
 
     fn stopped(&mut self) {
-        self.set_streamer_status_off();
+        // TODO
+        if let Some(streamer) = self.get_streamer_if_active() {
+            streamer.wait_until_end();
+        }
     }
 
-    fn get_streamer_if_active(&mut self) -> &Option<Streamer> {
-        // TODO CHANGE
-
-        if let Some(streamer) = &self.streamer {
-            if streamer.is_active() {}
-            self.set_streamer_status_off();
+    fn get_streamer_if_active(&mut self) -> Option<&mut Streamer> {
+        if self.streamer.is_active() {
+            return Some(&mut self.streamer);
         }
 
-        &None
-    }
-
-    fn set_streamer_status_off(&mut self) {
-        self.streamer = None;
+        None
     }
 }
 // #[cfg(test)]
