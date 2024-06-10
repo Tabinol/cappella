@@ -1,16 +1,16 @@
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard};
 
 use crate::player::Player;
 
 #[derive(Debug)]
 pub(crate) struct PlayerState {
-    player: Arc<Mutex<Player>>,
+    player: Mutex<Player>,
 }
 
 impl PlayerState {
     pub(crate) fn new(player: Player) -> Self {
         Self {
-            player: Arc::new(Mutex::new(player)),
+            player: Mutex::new(player),
         }
     }
 

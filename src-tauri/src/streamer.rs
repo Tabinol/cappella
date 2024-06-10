@@ -1,18 +1,19 @@
 use core::fmt;
 use std::{
-    collections::VecDeque,
     ffi::CString,
-    ptr::null_mut,
+    ptr::{null, null_mut},
     sync::{Arc, Mutex, OnceLock},
     thread,
 };
 
-use gstreamer_sys::{gst_bus_post, gst_message_new_application, gst_structure_new_empty, GstBus};
+use gstreamer::glib::gobject_ffi::G_TYPE_STRING;
+use gstreamer_sys::{gst_bus_post, gst_message_new_application, gst_structure_new, GstBus};
+use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
 use crate::streamer_thread::StreamerThread;
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum Message {
     Pause,
     Move,
@@ -39,29 +40,42 @@ pub(crate) enum Status {
 #[derive(Debug)]
 pub(crate) struct Share {
     pub(crate) bus: Mutex<*mut GstBus>,
-    pub(crate) lock: Mutex<()>,
+    pub(crate) streamer_lock: Mutex<()>,
     pub(crate) status: Mutex<Status>,
-    pub(crate) queue: Mutex<VecDeque<Message>>,
 }
 
 unsafe impl Send for Share {}
 unsafe impl Sync for Share {}
 
-#[derive(Debug)]
+pub(crate) struct MessageFields {
+    pub(crate) title: CString,
+    pub(crate) json_field: CString,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct Streamer {
-    share: Option<Arc<Share>>,
+    share: Arc<Share>,
 }
 
 const THREAD_NAME: &str = "streamer_loop";
 
-pub(crate) fn message_name() -> &'static CString {
-    static MESSAGE_NAME: OnceLock<CString> = OnceLock::new();
-    MESSAGE_NAME.get_or_init(|| CString::new("player_request").unwrap())
+pub(crate) fn message_fields() -> &'static MessageFields {
+    static MESSAGE_NAME: OnceLock<MessageFields> = OnceLock::new();
+    MESSAGE_NAME.get_or_init(|| MessageFields {
+        title: CString::new("player_request").unwrap(),
+        json_field: CString::new("json").unwrap(),
+    })
 }
 
 impl Streamer {
     pub(crate) fn new() -> Self {
-        Self { share: None }
+        Self {
+            share: Arc::new(Share {
+                bus: Mutex::new(null_mut()),
+                streamer_lock: Mutex::new(()),
+                status: Mutex::new(Status::Inactive),
+            }),
+        }
     }
 
     pub(crate) fn start(&mut self, app_handle: AppHandle, uri: String) {
@@ -69,27 +83,18 @@ impl Streamer {
             panic!("Streamer thread already active.")
         }
 
-        let share = Arc::new(Share {
-            bus: Mutex::new(null_mut()),
-            lock: Mutex::new(()),
-            status: Mutex::new(Status::Active),
-            queue: Mutex::new(VecDeque::new()),
-        });
-
-        let share_clone = Arc::clone(&share);
+        let share_clone = Arc::clone(&self.share);
 
         thread::Builder::new()
             .name(THREAD_NAME.to_string())
             .spawn(move || {
-                StreamerThread::new(share, app_handle, uri).start();
+                StreamerThread::new(share_clone, app_handle, uri).start();
             })
             .unwrap();
-
-        self.share = Some(share_clone);
     }
 
-    pub(crate) fn send(&self, message: Message) {
-        if let Some(share) = &self.share {
+    pub(crate) fn send(&mut self, message: Message) {
+        if let Some(share) = self.get_share_if_active() {
             let bus = share.bus.lock().unwrap();
 
             if bus.is_null() {
@@ -98,9 +103,16 @@ impl Streamer {
             }
 
             unsafe {
-                share.queue.lock().unwrap().push_back(message);
-
-                let structure = gst_structure_new_empty(message_name().as_ptr());
+                let message_fields = message_fields();
+                let json = serde_json::to_string(&message).unwrap();
+                let json_cstring = CString::new(json).unwrap();
+                let structure = gst_structure_new(
+                    message_fields.title.as_ptr(),
+                    message_fields.json_field.as_ptr(),
+                    G_TYPE_STRING,
+                    json_cstring.as_ptr(),
+                    null() as *const i8,
+                );
                 let gst_msg = gst_message_new_application(null_mut(), structure);
                 gst_bus_post(*bus, gst_msg);
             }
@@ -109,26 +121,20 @@ impl Streamer {
         }
     }
 
-    pub(crate) fn is_active(&mut self) -> bool {
-        if let Some(share) = &self.share {
-            if matches!(&*share.status.lock().unwrap(), Status::Active) {
-                return true;
-            }
-
-            // Wait if the streamer is not Totally Terminated.
-            self.wait_until_end();
+    pub(crate) fn get_share_if_active(&mut self) -> Option<&mut Arc<Share>> {
+        if self.is_active() {
+            return Some(&mut self.share);
         }
 
-        false
+        None
+    }
+
+    pub(crate) fn is_active(&mut self) -> bool {
+        matches!(&*self.share.status.lock().unwrap(), Status::Active)
     }
 
     pub(crate) fn wait_until_end(&mut self) {
-        if let Some(share) = &self.share {
-            let lock = share.lock.lock().unwrap();
-            drop(lock);
-        }
-
-        self.share = None;
+        let _unused = self.share.streamer_lock.lock().unwrap();
     }
 }
 

@@ -2,16 +2,7 @@ use tauri::AppHandle;
 
 use crate::streamer::{self, Streamer};
 
-#[derive(Debug, PartialEq)]
-pub(crate) enum Command {
-    Play(String),
-    Pause,
-    Stop,
-    StopSync,
-    Stopped,
-}
-
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Player {
     streamer: Streamer,
 }
@@ -23,17 +14,7 @@ impl Player {
         }
     }
 
-    pub(crate) fn command(&mut self, app_handle: AppHandle, command: Command) {
-        match command {
-            Command::Play(uri) => self.play(app_handle, uri.to_owned()),
-            Command::Pause => self.pause(),
-            Command::Stop => self.stop(),
-            Command::StopSync => self.stop_sync(),
-            Command::Stopped => self.stopped(),
-        }
-    }
-
-    fn play(&mut self, app_handle: AppHandle, uri: String) {
+    pub(crate) fn play(&mut self, app_handle: AppHandle, uri: String) {
         if let Some(streamer) = self.get_streamer_if_active() {
             streamer.send(streamer::Message::StopAndSendNewUri(uri));
             return;
@@ -42,33 +23,33 @@ impl Player {
         self.streamer.start(app_handle, uri);
     }
 
-    fn pause(&mut self) {
+    pub(crate) fn pause(&mut self) {
         if let Some(streamer) = self.get_streamer_if_active() {
             streamer.send(streamer::Message::Pause);
         }
     }
 
-    fn stop(&mut self) {
+    pub(crate) fn stop(&mut self) {
         if let Some(streamer) = self.get_streamer_if_active() {
             streamer.send(streamer::Message::Stop);
         }
     }
 
-    fn stop_sync(&mut self) {
+    pub(crate) fn stop_sync(&mut self) {
         if let Some(streamer) = self.get_streamer_if_active() {
             streamer.send(streamer::Message::StopSync);
             streamer.wait_until_end();
         }
     }
 
-    fn stopped(&mut self) {
+    pub(crate) fn stopped(&mut self) {
         // TODO
         if let Some(streamer) = self.get_streamer_if_active() {
             streamer.wait_until_end();
         }
     }
 
-    fn get_streamer_if_active(&mut self) -> Option<&mut Streamer> {
+    pub(crate) fn get_streamer_if_active(&mut self) -> Option<&mut Streamer> {
         if self.streamer.is_active() {
             return Some(&mut self.streamer);
         }
