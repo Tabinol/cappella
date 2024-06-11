@@ -8,9 +8,9 @@ pub(crate) struct PlayerState {
 }
 
 impl PlayerState {
-    pub(crate) fn new(player: Player) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            player: Mutex::new(player),
+            player: Mutex::new(Player::new()),
         }
     }
 

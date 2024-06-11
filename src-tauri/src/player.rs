@@ -1,60 +1,91 @@
+use std::{sync::Arc, thread};
+
 use tauri::AppHandle;
 
-use crate::streamer::{self, Streamer};
+use crate::{
+    streamer::Streamer,
+    streamer_pipe::{Status, StreamerPipe},
+};
 
 #[derive(Clone, Debug)]
 pub(crate) struct Player {
-    streamer: Streamer,
+    streamer_pipe: Arc<StreamerPipe>,
 }
+
+const STREAMER_THREAD_NAME: &str = "streamer";
 
 impl Player {
     pub(crate) fn new() -> Self {
         Self {
-            streamer: Streamer::new(),
+            streamer_pipe: Arc::new(StreamerPipe::new()),
         }
     }
 
-    pub(crate) fn play(&mut self, app_handle: AppHandle, uri: String) {
-        if let Some(streamer) = self.get_streamer_if_active() {
-            streamer.send(streamer::Message::StopAndSendNewUri(uri));
+    pub(crate) fn play(&self, app_handle: AppHandle, uri: &str) {
+        if let Some(streamer_pipe) = self.get_pipe_if_active() {
+            streamer_pipe.send_stop_and_send_new_uri(uri);
             return;
         }
 
-        self.streamer.start(app_handle, uri);
+        self.start_streamer(app_handle, uri);
     }
 
-    pub(crate) fn pause(&mut self) {
-        if let Some(streamer) = self.get_streamer_if_active() {
-            streamer.send(streamer::Message::Pause);
+    pub(crate) fn pause(&self) {
+        if let Some(streamer_pipe) = self.get_pipe_if_active() {
+            streamer_pipe.send_pause();
         }
     }
 
-    pub(crate) fn stop(&mut self) {
-        if let Some(streamer) = self.get_streamer_if_active() {
-            streamer.send(streamer::Message::Stop);
+    pub(crate) fn stop(&self) {
+        if let Some(streamer_pipe) = self.get_pipe_if_active() {
+            streamer_pipe.send_stop();
         }
     }
 
-    pub(crate) fn stop_sync(&mut self) {
-        if let Some(streamer) = self.get_streamer_if_active() {
-            streamer.send(streamer::Message::StopSync);
-            streamer.wait_until_end();
+    pub(crate) fn stop_sync(&self) {
+        if let Some(streamer_pipe) = self.get_pipe_if_active() {
+            streamer_pipe.send_stop_sync();
         }
+        self.wait_until_end();
     }
 
-    pub(crate) fn stopped(&mut self) {
+    pub(crate) fn stopped(&self) {
         // TODO
-        if let Some(streamer) = self.get_streamer_if_active() {
-            streamer.wait_until_end();
+        if self.get_pipe_if_active().is_some() {
+            self.wait_until_end();
         }
     }
 
-    pub(crate) fn get_streamer_if_active(&mut self) -> Option<&mut Streamer> {
-        if self.streamer.is_active() {
-            return Some(&mut self.streamer);
+    fn start_streamer(&self, app_handle: AppHandle, uri: &str) {
+        if self.is_active() {
+            panic!("Streamer thread already active.")
+        }
+
+        let uri_owned = uri.to_owned();
+        let streamer_pipe_clone = Arc::clone(&self.streamer_pipe);
+
+        thread::Builder::new()
+            .name(STREAMER_THREAD_NAME.to_string())
+            .spawn(move || {
+                Streamer::new(streamer_pipe_clone, app_handle, uri_owned).start();
+            })
+            .unwrap();
+    }
+
+    fn get_pipe_if_active(&self) -> Option<&StreamerPipe> {
+        if self.is_active() {
+            return Some(&self.streamer_pipe);
         }
 
         None
+    }
+
+    fn is_active(&self) -> bool {
+        matches!(&*self.streamer_pipe.status.lock().unwrap(), Status::Active)
+    }
+
+    fn wait_until_end(&self) {
+        let _unused = self.streamer_pipe.streamer_lock.lock().unwrap();
     }
 }
 // #[cfg(test)]
