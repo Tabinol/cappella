@@ -18,17 +18,26 @@ use tauri::{AppHandle, Manager};
 use crate::{
     player_state::PlayerState,
     streamer_pipe::{
-        cstring_ptr_to_str, str_to_cstring, Status, StreamerPipe, MESSAGE_FIELD_URI,
+        cstring_ptr_to_str, str_to_cstring, string_to_cstring, StreamerPipe, MESSAGE_FIELD_URI,
         MESSAGE_NAME_PAUSE, MESSAGE_NAME_STOP, MESSAGE_NAME_STOP_AND_SEND_NEW_URI,
         MESSAGE_NAME_STOP_SYNC,
     },
 };
 
 #[derive(Debug)]
+pub(crate) enum Status {
+    Active,
+    Async,
+    Sync,
+    PlayNext(String),
+}
+
+#[derive(Debug)]
 pub(crate) struct Streamer {
     streamer_pipe: Arc<StreamerPipe>,
     app_handle: AppHandle,
     uri: String,
+    status: Status,
     pipeline: *mut GstElement,
     is_playing: bool,
     duration: i64,
@@ -49,6 +58,7 @@ impl Streamer {
             streamer_pipe,
             app_handle,
             uri,
+            status: Status::Active,
             pipeline: null_mut(),
             is_playing: true,
             duration: GST_CLOCK_TIME_NONE as i64,
@@ -56,8 +66,6 @@ impl Streamer {
     }
 
     pub(crate) fn start(&mut self) {
-        let streamer_pipe_clone = Arc::clone(&self.streamer_pipe);
-        let _unused = streamer_pipe_clone.streamer_lock.lock().unwrap();
         unsafe {
             self.gst();
         }
@@ -68,9 +76,8 @@ impl Streamer {
      */
 
     unsafe fn gst(&mut self) {
-        *self.streamer_pipe.status.lock().unwrap() = Status::Active;
         let args = std::env::args()
-            .map(|arg| CString::new(arg).unwrap())
+            .map(|arg| string_to_cstring(arg))
             .collect::<Vec<CString>>();
 
         let mut c_args = args
@@ -80,7 +87,7 @@ impl Streamer {
 
         gst_init(&mut (c_args.len() as i32), &mut c_args.as_mut_ptr());
 
-        let pipeline_description = CString::new(format!("playbin uri=\"{}\"", self.uri)).unwrap();
+        let pipeline_description = str_to_cstring(format!("playbin uri=\"{}\"", self.uri).as_str());
         self.pipeline = gst_parse_launch(pipeline_description.as_ptr(), null_mut());
 
         let bus = gst_element_get_bus(self.pipeline);
@@ -98,22 +105,17 @@ impl Streamer {
         gst_element_set_state(self.pipeline, GST_STATE_NULL);
         gst_object_unref(self.pipeline as *mut GstObject);
 
-        match &*self.streamer_pipe.status.lock().unwrap() {
+        match &self.status {
             Status::Active => panic!("Streamer end with 'status=Active' should not happen."),
             Status::Async => self.player_stopped(),
             Status::Sync => {} // *********** FIND SOMETHING TO KNOW IF IS STREAMER IS
             Status::PlayNext(uri) => self.player_next(uri),
-            Status::Inactive => {
-                panic!("Streamer is in inactive state but the loop is active.")
-            }
         }
-
-        *self.streamer_pipe.status.lock().unwrap() = Status::Inactive;
     }
 
     unsafe fn loop_gst(&mut self, bus: *mut GstBus) {
         'end_gst: loop {
-            if !matches!(&*self.streamer_pipe.status.lock().unwrap(), Status::Active) {
+            if !matches!(self.status, Status::Active) {
                 break 'end_gst;
             }
 
@@ -142,12 +144,12 @@ impl Streamer {
         match msg.read().type_ {
             GST_MESSAGE_ERROR => {
                 eprintln!("Error received from element.");
-                *self.streamer_pipe.status.lock().unwrap() = Status::Async;
+                self.status = Status::Async;
             }
             GST_MESSAGE_EOS => {
                 // TODO remove?
                 println!("End-Of-Stream reached.");
-                *self.streamer_pipe.status.lock().unwrap() = Status::Async;
+                self.status = Status::Async;
             }
             GST_MESSAGE_DURATION_CHANGED => {
                 self.duration = GST_CLOCK_TIME_NONE as i64;
@@ -174,7 +176,8 @@ impl Streamer {
 
     unsafe fn handle_application_message(&mut self, msg: *mut GstMessage) {
         let structure = gst_message_get_structure(msg);
-        let name = cstring_ptr_to_str(gst_structure_get_name(structure));
+        let name_ptr = gst_structure_get_name(structure);
+        let name = cstring_ptr_to_str(name_ptr);
 
         match name {
             MESSAGE_NAME_PAUSE => {
@@ -189,21 +192,21 @@ impl Streamer {
             MESSAGE_NAME_STOP => {
                 // TODO remove?
                 println!("Stop request (Async).");
-                *self.streamer_pipe.status.lock().unwrap() = Status::Async;
+                self.status = Status::Async;
             }
             MESSAGE_NAME_STOP_AND_SEND_NEW_URI => {
                 let field_uri = str_to_cstring(MESSAGE_FIELD_URI);
-                let uri =
-                    cstring_ptr_to_str(gst_structure_get_string(structure, field_uri.as_ptr()));
+                let uri_ptr = gst_structure_get_string(structure, field_uri.as_ptr());
+                let uri = cstring_ptr_to_str(uri_ptr);
 
                 // TODO remove?
                 println!("Stop request (Async) and new uri '{uri}'.");
-                *self.streamer_pipe.status.lock().unwrap() = Status::PlayNext(uri.to_owned());
+                self.status = Status::PlayNext(uri.to_owned());
             }
             MESSAGE_NAME_STOP_SYNC => {
                 // TODO remove?
                 println!("Stop request (Sync).");
-                *self.streamer_pipe.status.lock().unwrap() = Status::Sync;
+                self.status = Status::Sync;
             }
             _ => {
                 eprintln!("The message name is wrong: '{name}'");

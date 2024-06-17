@@ -11,19 +11,8 @@ use gstreamer_sys::{
 };
 
 #[derive(Debug)]
-pub(crate) enum Status {
-    Active,
-    Async,
-    Sync,
-    PlayNext(String),
-    Inactive,
-}
-
-#[derive(Debug)]
 pub(crate) struct StreamerPipe {
     pub(crate) bus: Mutex<*mut GstBus>,
-    pub(crate) streamer_lock: Mutex<()>,
-    pub(crate) status: Mutex<Status>,
 }
 
 unsafe impl Send for StreamerPipe {}
@@ -39,6 +28,10 @@ pub(crate) fn str_to_cstring(str: &str) -> CString {
     CString::new(str).unwrap()
 }
 
+pub(crate) fn string_to_cstring(string: String) -> CString {
+    CString::new(string).unwrap()
+}
+
 pub(crate) unsafe fn cstring_ptr_to_str<'a>(ptr: *const i8) -> &'a str {
     CStr::from_ptr(ptr).to_str().unwrap()
 }
@@ -47,8 +40,6 @@ impl StreamerPipe {
     pub(crate) fn new() -> Self {
         Self {
             bus: Mutex::new(null_mut()),
-            streamer_lock: Mutex::new(()),
-            status: Mutex::new(Status::Inactive),
         }
     }
 
@@ -107,14 +98,154 @@ impl StreamerPipe {
     fn send(&self, structure: *mut GstStructure) {
         let bus = self.bus.lock().unwrap();
 
-        if bus.is_null() {
-            eprintln!("Unable to send the message to the streamer because the bus is null.");
-            return;
-        }
-
         unsafe {
             let gst_msg = gst_message_new_application(null_mut(), structure);
             gst_bus_post(*bus, gst_msg);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::CString;
+
+    use super::{cstring_ptr_to_str, str_to_cstring};
+
+    #[test]
+    fn test_str_to_cstring() {
+        let str = "abcd";
+        let cstring = str_to_cstring(str);
+
+        assert_eq!(cstring, CString::new("abcd").unwrap());
+    }
+
+    #[test]
+    fn test_cstring_ptr_to_str() {
+        let cstring = CString::new("abcd").unwrap();
+        let cstring_ptr = cstring.as_ptr();
+        let str = unsafe { cstring_ptr_to_str(cstring_ptr) };
+
+        assert_eq!(str, "abcd");
+    }
+
+    mod tests {
+        use std::ptr::null_mut;
+
+        use gstreamer::glib::ffi::{gboolean, GTRUE};
+        use gstreamer_sys::{
+            gst_message_get_structure, gst_message_unref, gst_structure_get_name,
+            gst_structure_get_string, GstBus, GstMessage,
+        };
+
+        use crate::streamer_pipe::{
+            cstring_ptr_to_str, str_to_cstring, StreamerPipe, MESSAGE_FIELD_URI,
+            MESSAGE_NAME_PAUSE, MESSAGE_NAME_STOP, MESSAGE_NAME_STOP_AND_SEND_NEW_URI,
+            MESSAGE_NAME_STOP_SYNC,
+        };
+
+        struct Message(*mut GstMessage);
+
+        unsafe impl Sync for Message {}
+
+        static mut MESSAGE: Message = Message(null_mut());
+
+        #[no_mangle]
+        #[allow(unused_variables)]
+        extern "C" fn gst_bus_post(bus: *mut GstBus, message: *mut GstMessage) -> gboolean {
+            unsafe {
+                MESSAGE.0 = message;
+            }
+
+            GTRUE
+        }
+
+        #[test]
+        fn test_send_pause() {
+            let streamer_pipe = StreamerPipe::new();
+            let name;
+            let message;
+
+            streamer_pipe.send_pause();
+
+            unsafe {
+                let structure = gst_message_get_structure(MESSAGE.0);
+                let name_ptr = gst_structure_get_name(structure);
+                name = cstring_ptr_to_str(name_ptr);
+                message = MESSAGE.0;
+                MESSAGE.0 = null_mut();
+            }
+
+            assert_eq!(name, MESSAGE_NAME_PAUSE);
+
+            unsafe { gst_message_unref(message) };
+        }
+
+        #[test]
+        fn test_send_stop() {
+            let streamer_pipe = StreamerPipe::new();
+            let name;
+            let message;
+
+            streamer_pipe.send_stop();
+
+            unsafe {
+                let structure = gst_message_get_structure(MESSAGE.0);
+                let name_ptr = gst_structure_get_name(structure);
+                name = cstring_ptr_to_str(name_ptr);
+                message = MESSAGE.0;
+                MESSAGE.0 = null_mut();
+            }
+
+            assert_eq!(name, MESSAGE_NAME_STOP);
+
+            unsafe { gst_message_unref(message) };
+        }
+
+        #[test]
+        fn test_send_stop_sync() {
+            let streamer_pipe = StreamerPipe::new();
+            let name;
+            let message;
+
+            streamer_pipe.send_stop_sync();
+
+            unsafe {
+                let structure = gst_message_get_structure(MESSAGE.0);
+                let name_ptr = gst_structure_get_name(structure);
+                name = cstring_ptr_to_str(name_ptr);
+                message = MESSAGE.0;
+                MESSAGE.0 = null_mut();
+            }
+
+            assert_eq!(name, MESSAGE_NAME_STOP_SYNC);
+
+            unsafe { gst_message_unref(message) };
+        }
+
+        #[test]
+        fn test_send_stop_and_send_new_uri() {
+            let streamer_pipe = StreamerPipe::new();
+            let name;
+            let uri;
+            let message;
+
+            streamer_pipe.send_stop_and_send_new_uri("newuri");
+
+            unsafe {
+                let structure = gst_message_get_structure(MESSAGE.0);
+                let name_ptr = gst_structure_get_name(structure);
+                let field_uri = str_to_cstring(MESSAGE_FIELD_URI);
+                let uri_ptr = gst_structure_get_string(structure, field_uri.as_ptr());
+                uri = cstring_ptr_to_str(uri_ptr);
+                name = cstring_ptr_to_str(name_ptr);
+                message = MESSAGE.0;
+                MESSAGE.0 = null_mut();
+            }
+
+            assert_eq!(name, MESSAGE_NAME_STOP_AND_SEND_NEW_URI);
+            assert_eq!(uri, "newuri");
+
+            unsafe { gst_message_unref(message) };
         }
     }
 }

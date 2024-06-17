@@ -31,7 +31,7 @@ pub fn run() {
         .manage(PlayerState::new())
         .on_window_event(move |window, event| {
             let player_state = window.state::<PlayerState>();
-            let player = player_state.player_mut();
+            let mut player = player_state.player_mut();
             if window.label().eq(MAIN_WINDOW_LABEL) {
                 match event {
                     tauri::WindowEvent::Destroyed => {

@@ -1,16 +1,22 @@
-use std::{sync::Arc, thread};
+use std::{
+    alloc::{alloc, dealloc, Layout},
+    ptr::{self, null_mut},
+    sync::Arc,
+    thread::{self, JoinHandle},
+};
 
 use tauri::AppHandle;
 
-use crate::{
-    streamer::Streamer,
-    streamer_pipe::{Status, StreamerPipe},
-};
+use crate::{streamer::Streamer, streamer_pipe::StreamerPipe};
 
 #[derive(Clone, Debug)]
 pub(crate) struct Player {
     streamer_pipe: Arc<StreamerPipe>,
+    streamer_join_handle: *mut JoinHandle<()>,
 }
+
+unsafe impl Send for Player {}
+unsafe impl Sync for Player {}
 
 const STREAMER_THREAD_NAME: &str = "streamer";
 
@@ -18,11 +24,12 @@ impl Player {
     pub(crate) fn new() -> Self {
         Self {
             streamer_pipe: Arc::new(StreamerPipe::new()),
+            streamer_join_handle: null_mut(),
         }
     }
 
-    pub(crate) fn play(&self, app_handle: AppHandle, uri: &str) {
-        if let Some(streamer_pipe) = self.get_pipe_if_active() {
+    pub(crate) fn play(&mut self, app_handle: AppHandle, uri: &str) {
+        if let Some(streamer_pipe) = self.get_pipe_opt() {
             streamer_pipe.send_stop_and_send_new_uri(uri);
             return;
         }
@@ -30,33 +37,33 @@ impl Player {
         self.start_streamer(app_handle, uri);
     }
 
-    pub(crate) fn pause(&self) {
-        if let Some(streamer_pipe) = self.get_pipe_if_active() {
+    pub(crate) fn pause(&mut self) {
+        if let Some(streamer_pipe) = self.get_pipe_opt() {
             streamer_pipe.send_pause();
         }
     }
 
-    pub(crate) fn stop(&self) {
-        if let Some(streamer_pipe) = self.get_pipe_if_active() {
+    pub(crate) fn stop(&mut self) {
+        if let Some(streamer_pipe) = self.get_pipe_opt() {
             streamer_pipe.send_stop();
         }
     }
 
-    pub(crate) fn stop_sync(&self) {
-        if let Some(streamer_pipe) = self.get_pipe_if_active() {
+    pub(crate) fn stop_sync(&mut self) {
+        if let Some(streamer_pipe) = self.get_pipe_opt() {
             streamer_pipe.send_stop_sync();
         }
         self.wait_until_end();
     }
 
-    pub(crate) fn stopped(&self) {
+    pub(crate) fn stopped(&mut self) {
         // TODO
-        if self.get_pipe_if_active().is_some() {
+        if self.get_pipe_opt().is_some() {
             self.wait_until_end();
         }
     }
 
-    fn start_streamer(&self, app_handle: AppHandle, uri: &str) {
+    fn start_streamer(&mut self, app_handle: AppHandle, uri: &str) {
         if self.is_active() {
             panic!("Streamer thread already active.")
         }
@@ -64,15 +71,17 @@ impl Player {
         let uri_owned = uri.to_owned();
         let streamer_pipe_clone = Arc::clone(&self.streamer_pipe);
 
-        thread::Builder::new()
+        let streamer_join_handle = thread::Builder::new()
             .name(STREAMER_THREAD_NAME.to_string())
             .spawn(move || {
                 Streamer::new(streamer_pipe_clone, app_handle, uri_owned).start();
             })
             .unwrap();
+
+        self.set_streamer_join_handle(streamer_join_handle);
     }
 
-    fn get_pipe_if_active(&self) -> Option<&StreamerPipe> {
+    fn get_pipe_opt(&mut self) -> Option<&StreamerPipe> {
         if self.is_active() {
             return Some(&self.streamer_pipe);
         }
@@ -80,114 +89,85 @@ impl Player {
         None
     }
 
-    fn is_active(&self) -> bool {
-        matches!(&*self.streamer_pipe.status.lock().unwrap(), Status::Active)
+    fn is_active(&mut self) -> bool {
+        if let Some(streamer_join_handle) = self.get_streamer_join_handle_opt() {
+            if !streamer_join_handle.is_finished() {
+                return true;
+            }
+
+            self.wait_until_end();
+        }
+
+        false
     }
 
-    fn wait_until_end(&self) {
-        let _unused = self.streamer_pipe.streamer_lock.lock().unwrap();
+    fn wait_until_end(&mut self) {
+        if self.streamer_join_handle == null_mut() {
+            return;
+        }
+
+        let streamer_join_handle = unsafe { ptr::read(self.streamer_join_handle) };
+        streamer_join_handle.join().unwrap();
+        self.unset_streamer_join_handle();
+    }
+
+    fn get_streamer_join_handle_opt(&self) -> Option<&JoinHandle<()>> {
+        if self.streamer_join_handle.is_null() {
+            return None;
+        }
+
+        Some(unsafe { &*self.streamer_join_handle })
+    }
+
+    fn set_streamer_join_handle(&mut self, streamer_join_handle: JoinHandle<()>) {
+        unsafe {
+            self.streamer_join_handle =
+                alloc(Layout::new::<JoinHandle<()>>()) as *mut JoinHandle<()>;
+            ptr::write(self.streamer_join_handle, streamer_join_handle);
+        }
+    }
+
+    fn unset_streamer_join_handle(&mut self) {
+        unsafe {
+            dealloc(
+                self.streamer_join_handle as *mut u8,
+                Layout::new::<JoinHandle<()>>(),
+            );
+        }
+
+        self.streamer_join_handle = null_mut();
     }
 }
-// #[cfg(test)]
-// mod tests {
 
-//     use std::thread;
+#[cfg(test)]
+mod tests {
+    use std::{
+        thread::{self},
+        time::Duration,
+    };
 
-//     use super::{Player, PlayerStatus};
+    use super::Player;
 
-//     struct Streamer {}
+    #[test]
+    fn test_is_active() {
+        let mut player = Player::new();
 
-//     impl Streamer {
-//         fn new(uri: String) -> Self {
-//             Self {}
-//         }
+        assert!(!player.is_active());
 
-//         fn start(&mut self) {
-//             thread::park();
-//         }
-//     }
+        let faked_streamer_join_handle = thread::Builder::new()
+            .spawn(move || {
+                thread::sleep(Duration::from_secs(2));
+            })
+            .unwrap();
 
-//     struct StreamerEvent {}
+        player.set_streamer_join_handle(faked_streamer_join_handle);
 
-//     // TODO
-//     impl StreamerEvent {}
+        assert!(player.is_active());
+        assert!(!player.get_streamer_join_handle_opt().unwrap().is_finished());
 
-//     #[test]
-//     fn test_play_new() {
-//         let mut player = Player {
-//             uri: None,
-//             streamer_join_handle: None,
-//             status: PlayerStatus::Empty,
-//         };
+        player.wait_until_end();
 
-//         player.play_new("uri");
-
-//         assert_eq!(player.get_state().state.unwrap(), GST_STATE_PLAYING);
-//         assert_eq!(player.uri, Some("uri".to_string()));
-//         assert_eq!(player.status, PlayerStatus::Play);
-//         assert!(player.pipeline.is_some());
-//     }
-
-//     #[test]
-//     fn test_pause() {
-//         let mut player = Player {
-//             pipeline: None,
-//             uri: None,
-//             status: PlayerStatus::Empty,
-//         };
-
-//         player.play_new("uri");
-//         player.pause();
-
-//         assert_eq!(player.get_state().state.unwrap(), GST_STATE_PAUSED);
-//         assert_eq!(player.status, PlayerStatus::Pause);
-//     }
-
-//     #[test]
-//     fn test_pause_pause() {
-//         let mut player = Player {
-//             pipeline: None,
-//             uri: None,
-//             status: PlayerStatus::Empty,
-//         };
-
-//         player.play_new("uri");
-//         player.pause();
-//         player.pause();
-
-//         assert_eq!(player.get_state().state.unwrap(), GST_STATE_PLAYING);
-//         assert_eq!(player.status, PlayerStatus::Play);
-//     }
-
-//     #[test]
-//     fn test_pause_play() {
-//         let mut player = Player {
-//             pipeline: None,
-//             uri: None,
-//             status: PlayerStatus::Empty,
-//         };
-
-//         player.play_new("uri");
-//         player.pause();
-//         player.play();
-
-//         assert_eq!(player.get_state().state.unwrap(), GST_STATE_PLAYING);
-//         assert_eq!(player.status, PlayerStatus::Play);
-//     }
-
-//     #[test]
-//     fn test_stop() {
-//         let mut player = Player {
-//             pipeline: None,
-//             uri: None,
-//             status: PlayerStatus::Empty,
-//         };
-
-//         player.play_new("uri");
-//         player.stop();
-
-//         assert!(player.get_state().state.is_none());
-//         assert_eq!(player.status, PlayerStatus::Stop);
-//         assert!(player.pipeline.is_none());
-//     }
-// }
+        assert!(!player.is_active());
+        assert!(player.streamer_join_handle.is_null());
+    }
+}
