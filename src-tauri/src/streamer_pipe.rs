@@ -107,9 +107,7 @@ impl StreamerPipe {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::CString;
-
-    use super::{cstring_ptr_to_str, str_to_cstring};
+    use super::*;
 
     #[test]
     fn test_str_to_cstring() {
@@ -172,12 +170,14 @@ mod tests {
                 let name_ptr = gst_structure_get_name(structure);
                 name = cstring_ptr_to_str(name_ptr);
                 message = MESSAGE.0;
-                MESSAGE.0 = null_mut();
             }
 
             assert_eq!(name, MESSAGE_NAME_PAUSE);
 
-            unsafe { gst_message_unref(message) };
+            unsafe {
+                gst_message_unref(message);
+                MESSAGE.0 = null_mut();
+            }
         }
 
         #[test]
@@ -193,12 +193,14 @@ mod tests {
                 let name_ptr = gst_structure_get_name(structure);
                 name = cstring_ptr_to_str(name_ptr);
                 message = MESSAGE.0;
-                MESSAGE.0 = null_mut();
             }
 
             assert_eq!(name, MESSAGE_NAME_STOP);
 
-            unsafe { gst_message_unref(message) };
+            unsafe {
+                gst_message_unref(message);
+                MESSAGE.0 = null_mut();
+            }
         }
 
         #[test]
@@ -214,12 +216,14 @@ mod tests {
                 let name_ptr = gst_structure_get_name(structure);
                 name = cstring_ptr_to_str(name_ptr);
                 message = MESSAGE.0;
-                MESSAGE.0 = null_mut();
             }
 
             assert_eq!(name, MESSAGE_NAME_STOP_SYNC);
 
-            unsafe { gst_message_unref(message) };
+            unsafe {
+                gst_message_unref(message);
+                MESSAGE.0 = null_mut();
+            }
         }
 
         #[test]
@@ -239,13 +243,15 @@ mod tests {
                 uri = cstring_ptr_to_str(uri_ptr);
                 name = cstring_ptr_to_str(name_ptr);
                 message = MESSAGE.0;
-                MESSAGE.0 = null_mut();
             }
 
             assert_eq!(name, MESSAGE_NAME_STOP_AND_SEND_NEW_URI);
             assert_eq!(uri, "newuri");
 
-            unsafe { gst_message_unref(message) };
+            unsafe {
+                gst_message_unref(message);
+                MESSAGE.0 = null_mut();
+            }
         }
     }
 }

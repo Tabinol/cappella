@@ -1,7 +1,7 @@
 use std::{
     alloc::{alloc, dealloc, Layout},
     ptr::{self, null_mut},
-    sync::Arc,
+    sync::{Arc, OnceLock},
     thread::{self, JoinHandle},
 };
 
@@ -11,6 +11,7 @@ use crate::{streamer::Streamer, streamer_pipe::StreamerPipe};
 
 #[derive(Clone, Debug)]
 pub(crate) struct Player {
+    app_handle: Option<AppHandle>,
     streamer_pipe: Arc<StreamerPipe>,
     streamer_join_handle: *mut JoinHandle<()>,
 }
@@ -20,21 +21,39 @@ unsafe impl Sync for Player {}
 
 const STREAMER_THREAD_NAME: &str = "streamer";
 
+static mut INSTANCE: OnceLock<Player> = OnceLock::<Player>::new();
+
 impl Player {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn init(app_handle: AppHandle) {
+        unsafe {
+            INSTANCE
+                .set(Self::new(Some(app_handle)))
+                .unwrap_or_else(|_| eprintln!("Trying to init 'Player' a second time. Ignoring."));
+        }
+    }
+    pub(crate) fn instance() -> &'static mut Self {
+        unsafe {
+            INSTANCE
+                .get_mut()
+                .expect("'Player' instance not initialized.")
+        }
+    }
+
+    fn new(app_handle: Option<AppHandle>) -> Self {
         Self {
+            app_handle,
             streamer_pipe: Arc::new(StreamerPipe::new()),
             streamer_join_handle: null_mut(),
         }
     }
 
-    pub(crate) fn play(&mut self, app_handle: AppHandle, uri: &str) {
+    pub(crate) fn play(&mut self, uri: &str) {
         if let Some(streamer_pipe) = self.get_pipe_opt() {
             streamer_pipe.send_stop_and_send_new_uri(uri);
             return;
         }
 
-        self.start_streamer(app_handle, uri);
+        self.start_streamer(uri);
     }
 
     pub(crate) fn pause(&mut self) {
@@ -63,18 +82,18 @@ impl Player {
         }
     }
 
-    fn start_streamer(&mut self, app_handle: AppHandle, uri: &str) {
+    fn start_streamer(&mut self, uri: &str) {
         if self.is_active() {
             panic!("Streamer thread already active.")
         }
 
         let uri_owned = uri.to_owned();
         let streamer_pipe_clone = Arc::clone(&self.streamer_pipe);
-
+        let app_handle_clone = self.app_handle.as_ref().unwrap().clone();
         let streamer_join_handle = thread::Builder::new()
             .name(STREAMER_THREAD_NAME.to_string())
             .spawn(move || {
-                Streamer::new(streamer_pipe_clone, app_handle, uri_owned).start();
+                Streamer::new(streamer_pipe_clone, app_handle_clone, uri_owned).start();
             })
             .unwrap();
 
@@ -141,16 +160,13 @@ impl Player {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        thread::{self},
-        time::Duration,
-    };
+    use std::time::Duration;
 
-    use super::Player;
+    use super::*;
 
     #[test]
     fn test_is_active() {
-        let mut player = Player::new();
+        let mut player = Player::new(None);
 
         assert!(!player.is_active());
 

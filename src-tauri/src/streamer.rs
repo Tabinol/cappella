@@ -13,10 +13,10 @@ use gstreamer_sys::{
     GST_MESSAGE_DURATION_CHANGED, GST_MESSAGE_EOS, GST_MESSAGE_ERROR, GST_MESSAGE_STATE_CHANGED,
     GST_MSECOND, GST_STATE_CHANGE_FAILURE, GST_STATE_NULL, GST_STATE_PAUSED, GST_STATE_PLAYING,
 };
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 use crate::{
-    player_state::PlayerState,
+    player::Player,
     streamer_pipe::{
         cstring_ptr_to_str, str_to_cstring, string_to_cstring, StreamerPipe, MESSAGE_FIELD_URI,
         MESSAGE_NAME_PAUSE, MESSAGE_NAME_STOP, MESSAGE_NAME_STOP_AND_SEND_NEW_URI,
@@ -234,24 +234,18 @@ impl Streamer {
     }
 
     fn player_stopped(&self) {
-        let app_handle = self.app_handle.clone();
-
         self.app_handle
             .run_on_main_thread(move || {
-                app_handle.state::<PlayerState>().player_mut().stopped();
+                Player::instance().stopped();
             })
             .unwrap();
     }
 
     fn player_next(&self, uri: &str) {
-        let app_handle_clone = self.app_handle.clone();
         let uri_owned = uri.to_owned();
         self.app_handle
             .run_on_main_thread(move || {
-                app_handle_clone
-                    .state::<PlayerState>()
-                    .player_mut()
-                    .play(app_handle_clone.clone(), uri_owned.as_str());
+                Player::instance().play(uri_owned.as_str());
             })
             .unwrap();
     }

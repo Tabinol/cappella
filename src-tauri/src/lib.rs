@@ -1,26 +1,25 @@
-use player_state::PlayerState;
-use tauri::{AppHandle, Manager, State};
+use player::Player;
+use tauri::Manager;
 
 mod player;
-mod player_state;
 mod streamer;
 mod streamer_pipe;
 
 pub(crate) const MAIN_WINDOW_LABEL: &str = "main";
 
 #[tauri::command]
-fn play(player_state: State<PlayerState>, app_handle: AppHandle, uri: &str) {
-    player_state.player_mut().play(app_handle, uri);
+fn play(uri: &str) {
+    Player::instance().play(uri);
 }
 
 #[tauri::command]
-fn pause(player_state: State<PlayerState>) {
-    player_state.player_mut().pause();
+fn pause() {
+    Player::instance().pause();
 }
 
 #[tauri::command]
-fn stop(player_state: State<PlayerState>) {
-    player_state.player_mut().stop();
+fn stop() {
+    Player::instance().stop();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -28,10 +27,12 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![play, pause, stop,])
-        .manage(PlayerState::new())
+        .setup(|app| {
+            Player::init(app.app_handle().clone());
+            Ok(())
+        })
         .on_window_event(move |window, event| {
-            let player_state = window.state::<PlayerState>();
-            let mut player = player_state.player_mut();
+            let player = Player::instance();
             if window.label().eq(MAIN_WINDOW_LABEL) {
                 match event {
                     tauri::WindowEvent::Destroyed => {
