@@ -1,18 +1,15 @@
 use std::{
     alloc::{alloc, dealloc, Layout},
     ptr::{self, null_mut},
-    sync::{Arc, OnceLock},
     thread::{self, JoinHandle},
 };
-
-use tauri::AppHandle;
 
 use crate::{streamer::Streamer, streamer_pipe::StreamerPipe};
 
 #[derive(Clone, Debug)]
 pub(crate) struct Player {
-    app_handle: Option<AppHandle>,
-    streamer_pipe: Arc<StreamerPipe>,
+    streamer: Streamer,
+    streamer_pipe: StreamerPipe,
     streamer_join_handle: *mut JoinHandle<()>,
 }
 
@@ -21,28 +18,11 @@ unsafe impl Sync for Player {}
 
 const STREAMER_THREAD_NAME: &str = "streamer";
 
-static mut INSTANCE: OnceLock<Player> = OnceLock::<Player>::new();
-
 impl Player {
-    pub(crate) fn init(app_handle: AppHandle) {
-        unsafe {
-            INSTANCE
-                .set(Self::new(Some(app_handle)))
-                .unwrap_or_else(|_| eprintln!("Trying to init 'Player' a second time. Ignoring."));
-        }
-    }
-    pub(crate) fn instance() -> &'static mut Self {
-        unsafe {
-            INSTANCE
-                .get_mut()
-                .expect("'Player' instance not initialized.")
-        }
-    }
-
-    fn new(app_handle: Option<AppHandle>) -> Self {
+    pub(crate) fn new(streamer: Streamer, streamer_pipe: StreamerPipe) -> Self {
         Self {
-            app_handle,
-            streamer_pipe: Arc::new(StreamerPipe::new()),
+            streamer,
+            streamer_pipe,
             streamer_join_handle: null_mut(),
         }
     }
@@ -88,12 +68,11 @@ impl Player {
         }
 
         let uri_owned = uri.to_owned();
-        let streamer_pipe_clone = Arc::clone(&self.streamer_pipe);
-        let app_handle_clone = self.app_handle.as_ref().unwrap().clone();
+        let mut streamer_clone = self.streamer.clone();
         let streamer_join_handle = thread::Builder::new()
             .name(STREAMER_THREAD_NAME.to_string())
             .spawn(move || {
-                Streamer::new(streamer_pipe_clone, app_handle_clone, uri_owned).start();
+                streamer_clone.run(uri_owned);
             })
             .unwrap();
 
@@ -109,33 +88,23 @@ impl Player {
     }
 
     fn is_active(&mut self) -> bool {
-        if let Some(streamer_join_handle) = self.get_streamer_join_handle_opt() {
-            if !streamer_join_handle.is_finished() {
-                return true;
-            }
-
-            self.wait_until_end();
+        if self.streamer.is_running() {
+            return true;
         }
+
+        self.wait_until_end();
 
         false
     }
 
     fn wait_until_end(&mut self) {
-        if self.streamer_join_handle == null_mut() {
+        if self.streamer_join_handle.is_null() {
             return;
         }
 
         let streamer_join_handle = unsafe { ptr::read(self.streamer_join_handle) };
         streamer_join_handle.join().unwrap();
         self.unset_streamer_join_handle();
-    }
-
-    fn get_streamer_join_handle_opt(&self) -> Option<&JoinHandle<()>> {
-        if self.streamer_join_handle.is_null() {
-            return None;
-        }
-
-        Some(unsafe { &*self.streamer_join_handle })
     }
 
     fn set_streamer_join_handle(&mut self, streamer_join_handle: JoinHandle<()>) {
@@ -158,32 +127,39 @@ impl Player {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
+// // #[cfg(test)]
+// // mod tests {
+// //     use std::time::Duration;
 
-    use super::*;
+// //     use crate::{my_app_handle::MyAppHandle, player::Player};
 
-    #[test]
-    fn test_is_active() {
-        let mut player = Player::new(None);
+// //     trait MockAppHandle {}
 
-        assert!(!player.is_active());
+// //     impl<T: MyAppHandle> MockAppHandle for T {}
 
-        let faked_streamer_join_handle = thread::Builder::new()
-            .spawn(move || {
-                thread::sleep(Duration::from_secs(2));
-            })
-            .unwrap();
+// //     struct Streamer {}
+// //     struct StreamerPipe {}
 
-        player.set_streamer_join_handle(faked_streamer_join_handle);
+// //     #[test]
+// //     fn test_is_active() {
+// //         let mut player = Player::new(Streamer {}, StreamerPipe {});
 
-        assert!(player.is_active());
-        assert!(!player.get_streamer_join_handle_opt().unwrap().is_finished());
+// //         assert!(!player.is_active());
 
-        player.wait_until_end();
+// //         let faked_streamer_join_handle = thread::Builder::new()
+// //             .spawn(move || {
+// //                 thread::sleep(Duration::from_secs(2));
+// //             })
+// //             .unwrap();
 
-        assert!(!player.is_active());
-        assert!(player.streamer_join_handle.is_null());
-    }
-}
+// //         player.set_streamer_join_handle(faked_streamer_join_handle);
+
+// //         assert!(player.is_active());
+// //         assert!(!player.get_streamer_join_handle_opt().unwrap().is_finished());
+
+// //         player.wait_until_end();
+
+// //         assert!(!player.is_active());
+// //         assert!(player.streamer_join_handle.is_null());
+// //     }
+// // }

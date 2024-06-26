@@ -1,7 +1,7 @@
 use std::{
     ffi::{CStr, CString},
     ptr::{null, null_mut},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 use gstreamer::glib::gobject_ffi::G_TYPE_STRING;
@@ -10,9 +10,9 @@ use gstreamer_sys::{
     GstStructure,
 };
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct StreamerPipe {
-    pub(crate) bus: Mutex<*mut GstBus>,
+    pub(crate) bus: Arc<Mutex<*mut GstBus>>,
 }
 
 unsafe impl Send for StreamerPipe {}
@@ -39,7 +39,7 @@ pub(crate) unsafe fn cstring_ptr_to_str<'a>(ptr: *const i8) -> &'a str {
 impl StreamerPipe {
     pub(crate) fn new() -> Self {
         Self {
-            bus: Mutex::new(null_mut()),
+            bus: Arc::new(Mutex::new(null_mut())),
         }
     }
 
@@ -98,16 +98,22 @@ impl StreamerPipe {
     fn send(&self, structure: *mut GstStructure) {
         let bus = self.bus.lock().unwrap();
 
-        unsafe {
-            let gst_msg = gst_message_new_application(null_mut(), structure);
-            gst_bus_post(*bus, gst_msg);
+        if !bus.is_null() {
+            unsafe {
+                let gst_msg = gst_message_new_application(null_mut(), structure);
+                gst_bus_post(*bus, gst_msg);
+            }
+        } else {
+            eprintln!("Unable to send the message to streamer.");
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::ffi::CString;
+
+    use crate::streamer_pipe::{cstring_ptr_to_str, str_to_cstring};
 
     #[test]
     fn test_str_to_cstring() {
