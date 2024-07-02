@@ -1,129 +1,71 @@
-use std::{
-    alloc::{alloc, dealloc, Layout},
-    ptr::{self, null_mut},
-    thread::{self, JoinHandle},
+use std::fmt::Debug;
+
+use dyn_clone::DynClone;
+
+use crate::{
+    streamer::Streamer,
+    streamer_pipe::{Message, StreamerPipe},
 };
 
-use crate::{streamer::Streamer, streamer_pipe::StreamerPipe};
-
-#[derive(Clone, Debug)]
-pub(crate) struct Player {
-    streamer: Streamer,
-    streamer_pipe: StreamerPipe,
-    streamer_join_handle: *mut JoinHandle<()>,
+pub(crate) trait Player: DynClone + Debug + Send + Sync {
+    fn play(&mut self, uri: &str);
+    fn pause(&mut self);
+    fn stop(&mut self);
+    fn end(&mut self);
 }
 
-unsafe impl Send for Player {}
-unsafe impl Sync for Player {}
+dyn_clone::clone_trait_object!(Player);
 
-const STREAMER_THREAD_NAME: &str = "streamer";
+#[derive(Clone, Debug)]
+pub(crate) struct ImplPlayer {
+    streamer: Box<dyn Streamer>,
+    streamer_pipe: Box<dyn StreamerPipe>,
+}
 
-impl Player {
-    pub(crate) fn new(streamer: Streamer, streamer_pipe: StreamerPipe) -> Self {
+unsafe impl Send for ImplPlayer {}
+unsafe impl Sync for ImplPlayer {}
+
+impl ImplPlayer {
+    pub(crate) fn new(streamer: Box<dyn Streamer>, streamer_pipe: Box<dyn StreamerPipe>) -> Self {
         Self {
             streamer,
             streamer_pipe,
-            streamer_join_handle: null_mut(),
         }
     }
 
-    pub(crate) fn play(&mut self, uri: &str) {
-        if let Some(streamer_pipe) = self.get_pipe_opt() {
-            streamer_pipe.send_stop_and_send_new_uri(uri);
-            return;
-        }
-
-        self.start_streamer(uri);
-    }
-
-    pub(crate) fn pause(&mut self) {
-        if let Some(streamer_pipe) = self.get_pipe_opt() {
-            streamer_pipe.send_pause();
-        }
-    }
-
-    pub(crate) fn stop(&mut self) {
-        if let Some(streamer_pipe) = self.get_pipe_opt() {
-            streamer_pipe.send_stop();
-        }
-    }
-
-    pub(crate) fn stop_sync(&mut self) {
-        if let Some(streamer_pipe) = self.get_pipe_opt() {
-            streamer_pipe.send_stop_sync();
-        }
-        self.wait_until_end();
-    }
-
-    pub(crate) fn stopped(&mut self) {
-        // TODO
-        if self.get_pipe_opt().is_some() {
-            self.wait_until_end();
-        }
-    }
-
-    fn start_streamer(&mut self, uri: &str) {
-        if self.is_active() {
-            panic!("Streamer thread already active.")
-        }
-
-        let uri_owned = uri.to_owned();
-        let mut streamer_clone = self.streamer.clone();
-        let streamer_join_handle = thread::Builder::new()
-            .name(STREAMER_THREAD_NAME.to_string())
-            .spawn(move || {
-                streamer_clone.run(uri_owned);
-            })
-            .unwrap();
-
-        self.set_streamer_join_handle(streamer_join_handle);
-    }
-
-    fn get_pipe_opt(&mut self) -> Option<&StreamerPipe> {
-        if self.is_active() {
-            return Some(&self.streamer_pipe);
+    fn get_pipe_opt(&mut self) -> Option<Box<(dyn StreamerPipe + 'static)>> {
+        if self.streamer.is_running() {
+            return Some(self.streamer_pipe.clone());
         }
 
         None
     }
+}
 
-    fn is_active(&mut self) -> bool {
-        if self.streamer.is_running() {
-            return true;
-        }
-
-        self.wait_until_end();
-
-        false
-    }
-
-    fn wait_until_end(&mut self) {
-        if self.streamer_join_handle.is_null() {
+impl Player for ImplPlayer {
+    fn play(&mut self, uri: &str) {
+        if let Some(streamer_pipe) = self.get_pipe_opt() {
+            streamer_pipe.send(Message::Next(uri.to_owned()));
             return;
         }
 
-        let streamer_join_handle = unsafe { ptr::read(self.streamer_join_handle) };
-        streamer_join_handle.join().unwrap();
-        self.unset_streamer_join_handle();
+        self.streamer.play(uri);
     }
 
-    fn set_streamer_join_handle(&mut self, streamer_join_handle: JoinHandle<()>) {
-        unsafe {
-            self.streamer_join_handle =
-                alloc(Layout::new::<JoinHandle<()>>()) as *mut JoinHandle<()>;
-            ptr::write(self.streamer_join_handle, streamer_join_handle);
+    fn pause(&mut self) {
+        if let Some(streamer_pipe) = self.get_pipe_opt() {
+            streamer_pipe.send(Message::Pause);
         }
     }
 
-    fn unset_streamer_join_handle(&mut self) {
-        unsafe {
-            dealloc(
-                self.streamer_join_handle as *mut u8,
-                Layout::new::<JoinHandle<()>>(),
-            );
+    fn stop(&mut self) {
+        if let Some(streamer_pipe) = self.get_pipe_opt() {
+            streamer_pipe.send(Message::Stop);
         }
+    }
 
-        self.streamer_join_handle = null_mut();
+    fn end(&mut self) {
+        self.streamer.end();
     }
 }
 

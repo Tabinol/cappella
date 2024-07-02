@@ -1,9 +1,16 @@
 use std::{
+    alloc::{alloc, dealloc, Layout},
     ffi::{c_char, CString},
-    ptr::null_mut,
-    sync::{Arc, Mutex},
+    fmt::Debug,
+    ptr::{self, null_mut},
+    sync::{
+        mpsc::{channel, Receiver, Sender},
+        Arc, Mutex,
+    },
+    thread::{self, JoinHandle},
 };
 
+use dyn_clone::DynClone;
 use gstreamer_sys::{
     gst_bus_timed_pop_filtered, gst_element_get_bus, gst_element_query_duration,
     gst_element_query_position, gst_element_set_state, gst_init, gst_message_get_structure,
@@ -14,76 +21,98 @@ use gstreamer_sys::{
     GST_MSECOND, GST_STATE_CHANGE_FAILURE, GST_STATE_NULL, GST_STATE_PAUSED, GST_STATE_PLAYING,
 };
 
-use crate::{
-    my_app_handle::MyAppHandle,
-    player_task::PlayerTask,
-    streamer_pipe::{
-        cstring_ptr_to_str, str_to_cstring, string_to_cstring, StreamerPipe, MESSAGE_FIELD_URI,
-        MESSAGE_NAME_PAUSE, MESSAGE_NAME_STOP, MESSAGE_NAME_STOP_AND_SEND_NEW_URI,
-        MESSAGE_NAME_STOP_SYNC,
-    },
+use crate::streamer_pipe::{
+    cstring_ptr_to_str, str_to_cstring, string_to_cstring, Message, StreamerPipe,
+    MESSAGE_FIELD_JSON, MESSAGE_NAME,
 };
 
+const THREAD_NAME: &str = "streamer";
+
 #[derive(Clone, Debug)]
-pub(crate) enum Status {
-    Active,
-    Async,
-    Sync,
+enum Status {
+    Wait,
+    Play(String),
     PlayNext(String),
+    End,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct Data {
     uri: String,
-    status: Status,
     pipeline: *mut GstElement,
     is_playing: bool,
     duration: i64,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct Streamer {
-    streamer_pipe: StreamerPipe,
-    app_handle: Box<dyn MyAppHandle>,
-    running_lock: Arc<Mutex<()>>,
+pub(crate) trait Streamer: DynClone + Debug + Send + Sync {
+    fn is_running(&self) -> bool;
+    fn start(&mut self);
+    fn play(&mut self, uri: &str);
+    fn end(&mut self);
 }
 
-unsafe impl Send for Streamer {}
-unsafe impl Sync for Streamer {}
+dyn_clone::clone_trait_object!(Streamer);
+
+#[derive(Clone, Debug)]
+pub(crate) struct ImplStreamer {
+    streamer_pipe: Box<dyn StreamerPipe>,
+    sender: Arc<Sender<Status>>,
+    receiver: Arc<Receiver<Status>>,
+    join_handle: *mut JoinHandle<()>,
+    status: Arc<Mutex<Status>>,
+}
+
+unsafe impl Send for ImplStreamer {}
+unsafe impl Sync for ImplStreamer {}
 
 const UPDATE_POSITION_MILLISECONDS: i64 = 100;
 
-impl Streamer {
-    pub(crate) fn new(streamer_pipe: StreamerPipe, app_handle: Box<dyn MyAppHandle>) -> Self {
+impl ImplStreamer {
+    pub(crate) fn new(streamer_pipe: Box<dyn StreamerPipe>) -> Self {
+        let (sender, receiver) = channel::<Status>();
+
         Self {
             streamer_pipe,
-            app_handle,
-            running_lock: Arc::new(Mutex::new(())),
+            sender: Arc::new(sender),
+            receiver: Arc::new(receiver),
+            join_handle: null_mut(),
+            status: Arc::new(Mutex::new(Status::Wait)),
         }
     }
 
-    pub(crate) fn is_running(&self) -> bool {
-        self.running_lock.try_lock().is_err()
-    }
+    fn gst_thread(&mut self) {
+        'end_gst_thread: loop {
+            let status_clone = Arc::clone(&self.status);
+            let mut current_status = status_clone.lock().unwrap().clone();
 
-    pub(crate) fn run(&mut self, uri: String) {
-        let mut data = Data {
-            uri,
-            status: Status::Active,
-            pipeline: null_mut(),
-            is_playing: true,
-            duration: GST_CLOCK_TIME_NONE as i64,
-        };
+            if matches!(current_status, Status::Wait) {
+                current_status = self.receiver.recv().unwrap();
+                *status_clone.lock().unwrap() = current_status.clone();
+            }
 
-        unsafe {
-            self.gst(&mut data);
+            if let Status::Play(uri) = current_status {
+                let mut data = Data {
+                    uri: uri.to_owned(),
+                    pipeline: null_mut(),
+                    is_playing: true,
+                    duration: GST_CLOCK_TIME_NONE as i64,
+                };
+                unsafe { self.gst(&mut data) };
+            }
+
+            let mut status_lock = status_clone.lock().unwrap();
+
+            if let Status::PlayNext(uri) = &*status_lock {
+                *status_lock = Status::Play(uri.to_owned());
+            }
+
+            if matches!(&*status_lock, Status::End) {
+                break 'end_gst_thread;
+            }
         }
     }
 
     unsafe fn gst(&mut self, data: &mut Data) {
-        let running_lock = Arc::clone(&self.running_lock);
-        let running_lock_acquire = running_lock.lock().unwrap();
-
         let args = std::env::args()
             .map(|arg| string_to_cstring(arg))
             .collect::<Vec<CString>>();
@@ -99,7 +128,7 @@ impl Streamer {
         data.pipeline = gst_parse_launch(pipeline_description.as_ptr(), null_mut());
 
         let bus = gst_element_get_bus(data.pipeline);
-        *self.streamer_pipe.bus.lock().unwrap() = bus;
+        self.streamer_pipe.set_bus(bus);
 
         if gst_element_set_state(data.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE {
             gst_object_unref(data.pipeline as *mut GstObject);
@@ -108,30 +137,14 @@ impl Streamer {
 
         self.loop_gst(data, bus);
 
-        *self.streamer_pipe.bus.lock().unwrap() = null_mut();
+        self.streamer_pipe.set_bus(null_mut());
         gst_object_unref(bus as *mut GstObject);
         gst_element_set_state(data.pipeline, GST_STATE_NULL);
         gst_object_unref(data.pipeline as *mut GstObject);
-        drop(running_lock_acquire);
-
-        match &data.status {
-            Status::Active => eprintln!("Streamer end with 'status=Active' should not happen."),
-            Status::Async => self
-                .app_handle
-                .run_player_task_on_main_thread(PlayerTask::Stopped),
-            Status::Sync => {} // *********** FIND SOMETHING TO KNOW IF IS STREAMER IS
-            Status::PlayNext(uri) => self
-                .app_handle
-                .run_player_task_on_main_thread(PlayerTask::Next(uri.to_owned())),
-        }
     }
 
     unsafe fn loop_gst(&mut self, data: &mut Data, bus: *mut GstBus) {
         'end_gst: loop {
-            if !matches!(data.status, Status::Active) {
-                break 'end_gst;
-            }
-
             let msg = gst_bus_timed_pop_filtered(
                 bus,
                 (UPDATE_POSITION_MILLISECONDS * GST_MSECOND) as u64,
@@ -142,30 +155,43 @@ impl Streamer {
                     | GST_MESSAGE_APPLICATION,
             );
 
+            let status_clone = Arc::clone(&self.status);
+            let mut status_lock = status_clone.lock().unwrap();
+
             if !msg.is_null() {
-                self.handle_message(data, msg);
+                let new_status_opt = self.handle_message(data, msg);
+
+                if let Some(new_status) = new_status_opt {
+                    *status_lock = new_status;
+                }
+
                 gst_message_unref(msg);
             } else {
                 if data.is_playing {
                     self.update_position(data);
                 }
             }
+
+            if !matches!(&*status_lock, Status::Play(_)) {
+                break 'end_gst;
+            }
         }
     }
 
-    unsafe fn handle_message(&mut self, data: &mut Data, msg: *mut GstMessage) {
+    unsafe fn handle_message(&mut self, data: &mut Data, msg: *mut GstMessage) -> Option<Status> {
         match msg.read().type_ {
             GST_MESSAGE_ERROR => {
                 eprintln!("Error received from element.");
-                data.status = Status::Async;
+                Some(Status::Wait)
             }
             GST_MESSAGE_EOS => {
                 // TODO remove?
                 println!("End-Of-Stream reached.");
-                data.status = Status::Async;
+                Some(Status::Wait)
             }
             GST_MESSAGE_DURATION_CHANGED => {
                 data.duration = GST_CLOCK_TIME_NONE as i64;
+                None
             }
             GST_MESSAGE_STATE_CHANGED => {
                 let mut old_state: GstState = GST_STATE_NULL;
@@ -177,23 +203,38 @@ impl Streamer {
                     &mut new_state,
                     &mut pending_state,
                 );
+                None
             }
-            GST_MESSAGE_APPLICATION => {
-                self.handle_application_message(data, msg);
-            }
+            GST_MESSAGE_APPLICATION => self.handle_application_message(data, msg),
             _ => {
                 eprintln!("Unexpected message received");
+                None
             }
         }
     }
 
-    unsafe fn handle_application_message(&mut self, data: &mut Data, msg: *mut GstMessage) {
+    unsafe fn handle_application_message(
+        &mut self,
+        data: &mut Data,
+        msg: *mut GstMessage,
+    ) -> Option<Status> {
         let structure = gst_message_get_structure(msg);
         let name_ptr = gst_structure_get_name(structure);
         let name = cstring_ptr_to_str(name_ptr);
 
-        match name {
-            MESSAGE_NAME_PAUSE => {
+        if name.ne(MESSAGE_NAME) {
+            eprintln!("Streamer pipe message name error: {name}");
+            return None;
+        }
+
+        let field_json = str_to_cstring(MESSAGE_FIELD_JSON);
+        let json_ptr = gst_structure_get_string(structure, field_json.as_ptr());
+        let json = cstring_ptr_to_str(json_ptr);
+        let message = serde_json::from_str(json)
+            .expect(format!("Unreadable streamer message: {json}").as_str());
+
+        match message {
+            Message::Pause => {
                 if data.is_playing {
                     gst_element_set_state(data.pipeline, GST_STATE_PAUSED);
                     data.is_playing = false;
@@ -201,28 +242,22 @@ impl Streamer {
                     gst_element_set_state(data.pipeline, GST_STATE_PLAYING);
                     data.is_playing = true;
                 }
+                None
             }
-            MESSAGE_NAME_STOP => {
+            Message::Stop => {
                 // TODO remove?
-                println!("Stop request (Async).");
-                data.status = Status::Async;
+                println!("Stop request.");
+                Some(Status::Wait)
             }
-            MESSAGE_NAME_STOP_AND_SEND_NEW_URI => {
-                let field_uri = str_to_cstring(MESSAGE_FIELD_URI);
-                let uri_ptr = gst_structure_get_string(structure, field_uri.as_ptr());
-                let uri = cstring_ptr_to_str(uri_ptr);
-
+            Message::Next(uri) => {
                 // TODO remove?
                 println!("Stop request (Async) and new uri '{uri}'.");
-                data.status = Status::PlayNext(uri.to_owned());
+                Some(Status::PlayNext(uri))
             }
-            MESSAGE_NAME_STOP_SYNC => {
+            Message::End => {
                 // TODO remove?
-                println!("Stop request (Sync).");
-                data.status = Status::Sync;
-            }
-            _ => {
-                eprintln!("The message name is wrong: '{name}'");
+                println!("End request.");
+                Some(Status::End)
             }
         }
     }
@@ -244,6 +279,52 @@ impl Streamer {
 
         // TODO Temp
         println!("Position {} / {}", current, data.duration);
+    }
+}
+
+impl Streamer for ImplStreamer {
+    fn is_running(&self) -> bool {
+        matches!(&*self.status.lock().unwrap(), Status::Play(_))
+    }
+
+    fn start(&mut self) {
+        let mut streamer_clone = self.clone();
+
+        let join_handle = thread::Builder::new()
+            .name(THREAD_NAME.to_string())
+            .spawn(move || {
+                streamer_clone.gst_thread();
+            })
+            .unwrap();
+
+        unsafe {
+            self.join_handle = alloc(Layout::new::<JoinHandle<()>>()) as *mut JoinHandle<()>;
+            ptr::write(self.join_handle, join_handle);
+        }
+    }
+
+    fn play(&mut self, uri: &str) {
+        if matches!(&*self.status.lock().unwrap(), Status::Play(_)) {
+            self.streamer_pipe.send(Message::Next(uri.to_owned()));
+        } else {
+            self.sender.send(Status::Play(uri.to_owned())).unwrap();
+        }
+    }
+
+    fn end(&mut self) {
+        if !self.join_handle.is_null() {
+            if matches!(&*self.status.lock().unwrap(), Status::Play(_)) {
+                self.streamer_pipe.send(Message::End);
+            } else {
+                self.sender.send(Status::End).unwrap();
+            }
+
+            unsafe {
+                ptr::read(self.join_handle).join().unwrap();
+                dealloc(self.join_handle as *mut u8, Layout::new::<JoinHandle<()>>());
+                self.join_handle = null_mut();
+            };
+        }
     }
 }
 

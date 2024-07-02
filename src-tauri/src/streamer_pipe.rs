@@ -1,28 +1,41 @@
 use std::{
     ffi::{CStr, CString},
+    fmt::Debug,
     ptr::{null, null_mut},
     sync::{Arc, Mutex},
 };
 
+use dyn_clone::DynClone;
 use gstreamer::glib::gobject_ffi::G_TYPE_STRING;
 use gstreamer_sys::{
-    gst_bus_post, gst_message_new_application, gst_structure_new, gst_structure_new_empty, GstBus,
-    GstStructure,
+    gst_bus_post, gst_message_new_application, gst_structure_new, GstBus, GstStructure,
 };
 
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub(crate) enum Message {
+    Pause,
+    Next(String),
+    Stop,
+    End,
+}
+
+pub(crate) trait StreamerPipe: DynClone + Debug + Send + Sync {
+    fn set_bus(&self, bus: *mut GstBus);
+    fn send(&self, message: Message);
+}
+
+dyn_clone::clone_trait_object!(StreamerPipe);
+
 #[derive(Clone, Debug)]
-pub(crate) struct StreamerPipe {
+pub(crate) struct ImplStreamerPipe {
     pub(crate) bus: Arc<Mutex<*mut GstBus>>,
 }
 
-unsafe impl Send for StreamerPipe {}
-unsafe impl Sync for StreamerPipe {}
+unsafe impl Send for ImplStreamerPipe {}
+unsafe impl Sync for ImplStreamerPipe {}
 
-pub(crate) const MESSAGE_NAME_PAUSE: &str = "APPLICATION_PAUSE";
-pub(crate) const MESSAGE_NAME_STOP: &str = "APPLICATION_STOP";
-pub(crate) const MESSAGE_NAME_STOP_SYNC: &str = "APPLICATION_STOP_SYNC";
-pub(crate) const MESSAGE_NAME_STOP_AND_SEND_NEW_URI: &str = "APPLICATION_STOP_AND_SEND_NEW_URI";
-pub(crate) const MESSAGE_FIELD_URI: &str = "URI";
+pub(crate) const MESSAGE_NAME: &str = "APP_MSG";
+pub(crate) const MESSAGE_FIELD_JSON: &str = "JSON";
 
 pub(crate) fn str_to_cstring(str: &str) -> CString {
     CString::new(str).unwrap()
@@ -36,76 +49,51 @@ pub(crate) unsafe fn cstring_ptr_to_str<'a>(ptr: *const i8) -> &'a str {
     CStr::from_ptr(ptr).to_str().unwrap()
 }
 
-impl StreamerPipe {
+impl ImplStreamerPipe {
     pub(crate) fn new() -> Self {
         Self {
             bus: Arc::new(Mutex::new(null_mut())),
         }
     }
 
-    pub(crate) fn send_pause(&self) {
-        let structure;
-        let name = str_to_cstring(MESSAGE_NAME_PAUSE);
+    fn send_to_gst(&self, structure: *mut GstStructure) {
+        let bus = self.bus.lock().unwrap();
 
-        unsafe {
-            structure = gst_structure_new_empty(name.as_ptr());
+        #[cfg(not(test))]
+        if bus.is_null() {
+            eprintln!("Unable to send the message to streamer.");
         }
 
-        self.send(structure);
-    }
-
-    pub(crate) fn send_stop(&self) {
-        let structure;
-        let name = str_to_cstring(MESSAGE_NAME_STOP);
-
         unsafe {
-            structure = gst_structure_new_empty(name.as_ptr());
+            let gst_msg = gst_message_new_application(null_mut(), structure);
+            gst_bus_post(*bus, gst_msg);
         }
+    }
+}
 
-        self.send(structure);
+impl StreamerPipe for ImplStreamerPipe {
+    fn set_bus(&self, bus: *mut GstBus) {
+        *self.bus.lock().unwrap() = bus;
     }
 
-    pub(crate) fn send_stop_sync(&self) {
+    fn send(&self, message: Message) {
         let structure;
-        let name = str_to_cstring(MESSAGE_NAME_STOP_SYNC);
-
-        unsafe {
-            structure = gst_structure_new_empty(name.as_ptr());
-        }
-
-        self.send(structure);
-    }
-
-    pub(crate) fn send_stop_and_send_new_uri(&self, uri: &str) {
-        let structure;
-        let name = str_to_cstring(MESSAGE_NAME_STOP_AND_SEND_NEW_URI);
-        let field_uri = str_to_cstring(MESSAGE_FIELD_URI);
-        let uri_cstring = str_to_cstring(uri);
+        let name = str_to_cstring(MESSAGE_NAME);
+        let field_json = str_to_cstring(MESSAGE_FIELD_JSON);
+        let json = serde_json::to_string(&message).unwrap();
+        let json_cstring = string_to_cstring(json);
 
         unsafe {
             structure = gst_structure_new(
                 name.as_ptr(),
-                field_uri.as_ptr(),
+                field_json.as_ptr(),
                 G_TYPE_STRING,
-                uri_cstring.as_ptr(),
+                json_cstring.as_ptr(),
                 null() as *const i8,
             );
         }
 
-        self.send(structure);
-    }
-
-    fn send(&self, structure: *mut GstStructure) {
-        let bus = self.bus.lock().unwrap();
-
-        if !bus.is_null() {
-            unsafe {
-                let gst_msg = gst_message_new_application(null_mut(), structure);
-                gst_bus_post(*bus, gst_msg);
-            }
-        } else {
-            eprintln!("Unable to send the message to streamer.");
-        }
+        self.send_to_gst(structure);
     }
 }
 
@@ -113,12 +101,20 @@ impl StreamerPipe {
 mod tests {
     use std::ffi::CString;
 
-    use crate::streamer_pipe::{cstring_ptr_to_str, str_to_cstring};
+    use crate::streamer_pipe::{cstring_ptr_to_str, str_to_cstring, string_to_cstring};
 
     #[test]
     fn test_str_to_cstring() {
         let str = "abcd";
         let cstring = str_to_cstring(str);
+
+        assert_eq!(cstring, CString::new("abcd").unwrap());
+    }
+
+    #[test]
+    fn test_string_to_cstring() {
+        let str = "abcd".to_string();
+        let cstring = string_to_cstring(str);
 
         assert_eq!(cstring, CString::new("abcd").unwrap());
     }
@@ -142,9 +138,8 @@ mod tests {
         };
 
         use crate::streamer_pipe::{
-            cstring_ptr_to_str, str_to_cstring, StreamerPipe, MESSAGE_FIELD_URI,
-            MESSAGE_NAME_PAUSE, MESSAGE_NAME_STOP, MESSAGE_NAME_STOP_AND_SEND_NEW_URI,
-            MESSAGE_NAME_STOP_SYNC,
+            self, cstring_ptr_to_str, str_to_cstring, ImplStreamerPipe, StreamerPipe,
+            MESSAGE_FIELD_JSON, MESSAGE_NAME,
         };
 
         struct Message(*mut GstMessage);
@@ -165,20 +160,60 @@ mod tests {
 
         #[test]
         fn test_send_pause() {
-            let streamer_pipe = StreamerPipe::new();
+            let streamer_pipe = ImplStreamerPipe::new();
             let name;
+            let result_message: streamer_pipe::Message;
             let message;
 
-            streamer_pipe.send_pause();
+            streamer_pipe.send(streamer_pipe::Message::Pause);
 
             unsafe {
                 let structure = gst_message_get_structure(MESSAGE.0);
                 let name_ptr = gst_structure_get_name(structure);
+                let field_json = str_to_cstring(MESSAGE_FIELD_JSON);
+                let json_ptr = gst_structure_get_string(structure, field_json.as_ptr());
+                let json = cstring_ptr_to_str(json_ptr);
                 name = cstring_ptr_to_str(name_ptr);
+                result_message = serde_json::from_str(json).unwrap();
                 message = MESSAGE.0;
             }
 
-            assert_eq!(name, MESSAGE_NAME_PAUSE);
+            assert_eq!(name, MESSAGE_NAME);
+            assert!(matches!(result_message, streamer_pipe::Message::Pause));
+
+            unsafe {
+                gst_message_unref(message);
+                MESSAGE.0 = null_mut();
+            }
+        }
+
+        #[test]
+        fn test_next() {
+            let streamer_pipe = ImplStreamerPipe::new();
+            let name;
+            let result_message: streamer_pipe::Message;
+            let message;
+
+            streamer_pipe.send(streamer_pipe::Message::Next("newuri".to_string()));
+
+            unsafe {
+                let structure = gst_message_get_structure(MESSAGE.0);
+                let name_ptr = gst_structure_get_name(structure);
+                let field_json = str_to_cstring(MESSAGE_FIELD_JSON);
+                let json_ptr = gst_structure_get_string(structure, field_json.as_ptr());
+                let json = cstring_ptr_to_str(json_ptr);
+                name = cstring_ptr_to_str(name_ptr);
+                result_message = serde_json::from_str(json).unwrap();
+                message = MESSAGE.0;
+            }
+
+            assert_eq!(name, MESSAGE_NAME);
+            assert!(matches!(result_message, streamer_pipe::Message::Next(_)));
+            assert!(if let streamer_pipe::Message::Next(uri) = result_message {
+                uri.eq("newuri")
+            } else {
+                false
+            });
 
             unsafe {
                 gst_message_unref(message);
@@ -188,20 +223,26 @@ mod tests {
 
         #[test]
         fn test_send_stop() {
-            let streamer_pipe = StreamerPipe::new();
+            let streamer_pipe = ImplStreamerPipe::new();
             let name;
+            let result_message: streamer_pipe::Message;
             let message;
 
-            streamer_pipe.send_stop();
+            streamer_pipe.send(streamer_pipe::Message::Stop);
 
             unsafe {
                 let structure = gst_message_get_structure(MESSAGE.0);
                 let name_ptr = gst_structure_get_name(structure);
+                let field_json = str_to_cstring(MESSAGE_FIELD_JSON);
+                let json_ptr = gst_structure_get_string(structure, field_json.as_ptr());
+                let json = cstring_ptr_to_str(json_ptr);
                 name = cstring_ptr_to_str(name_ptr);
+                result_message = serde_json::from_str(json).unwrap();
                 message = MESSAGE.0;
             }
 
-            assert_eq!(name, MESSAGE_NAME_STOP);
+            assert_eq!(name, MESSAGE_NAME);
+            assert!(matches!(result_message, streamer_pipe::Message::Stop));
 
             unsafe {
                 gst_message_unref(message);
@@ -210,49 +251,27 @@ mod tests {
         }
 
         #[test]
-        fn test_send_stop_sync() {
-            let streamer_pipe = StreamerPipe::new();
+        fn test_send_end() {
+            let streamer_pipe = ImplStreamerPipe::new();
             let name;
+            let result_message: streamer_pipe::Message;
             let message;
 
-            streamer_pipe.send_stop_sync();
+            streamer_pipe.send(streamer_pipe::Message::End);
 
             unsafe {
                 let structure = gst_message_get_structure(MESSAGE.0);
                 let name_ptr = gst_structure_get_name(structure);
+                let field_json = str_to_cstring(MESSAGE_FIELD_JSON);
+                let json_ptr = gst_structure_get_string(structure, field_json.as_ptr());
+                let json = cstring_ptr_to_str(json_ptr);
                 name = cstring_ptr_to_str(name_ptr);
+                result_message = serde_json::from_str(json).unwrap();
                 message = MESSAGE.0;
             }
 
-            assert_eq!(name, MESSAGE_NAME_STOP_SYNC);
-
-            unsafe {
-                gst_message_unref(message);
-                MESSAGE.0 = null_mut();
-            }
-        }
-
-        #[test]
-        fn test_send_stop_and_send_new_uri() {
-            let streamer_pipe = StreamerPipe::new();
-            let name;
-            let uri;
-            let message;
-
-            streamer_pipe.send_stop_and_send_new_uri("newuri");
-
-            unsafe {
-                let structure = gst_message_get_structure(MESSAGE.0);
-                let name_ptr = gst_structure_get_name(structure);
-                let field_uri = str_to_cstring(MESSAGE_FIELD_URI);
-                let uri_ptr = gst_structure_get_string(structure, field_uri.as_ptr());
-                uri = cstring_ptr_to_str(uri_ptr);
-                name = cstring_ptr_to_str(name_ptr);
-                message = MESSAGE.0;
-            }
-
-            assert_eq!(name, MESSAGE_NAME_STOP_AND_SEND_NEW_URI);
-            assert_eq!(uri, "newuri");
+            assert_eq!(name, MESSAGE_NAME);
+            assert!(matches!(result_message, streamer_pipe::Message::End));
 
             unsafe {
                 gst_message_unref(message);
