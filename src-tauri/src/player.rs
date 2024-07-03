@@ -66,51 +66,96 @@ impl Player for ImplPlayer {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use crate::{player::ImplPlayer, streamer::Streamer};
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
 
-//     #[derive(Clone, Debug)]
-//     struct MockStreamer {}
+    use crate::{
+        player::ImplPlayer,
+        streamer::MockStreamer,
+        streamer_pipe::{Message, MockStreamerPipe},
+    };
 
-//     impl Streamer for MockStreamer {
-//         fn is_running(&self) -> bool {
-//             todo!()
-//         }
+    use super::Player;
 
-//         fn start(&mut self) {
-//             todo!()
-//         }
+    #[test]
+    fn test_play_when_streamer_inactive() {
+        let sent_uri: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        let sent_uri_clone: Arc<Mutex<String>> = Arc::clone(&sent_uri);
+        let mut streamer = MockStreamer::new();
+        let streamer_pipe = MockStreamerPipe::new();
+        streamer.expect_is_running().return_const(false);
+        streamer
+            .expect_play()
+            .return_once(move |uri| *sent_uri_clone.lock().unwrap() = uri.to_string());
 
-//         fn play(&mut self, uri: &str) {
-//             todo!()
-//         }
+        let player = ImplPlayer::new(Arc::new(streamer), Arc::new(streamer_pipe));
 
-//         fn end(&mut self) {
-//             todo!()
-//         }
-//     }
+        player.play("testuri");
 
-//     #[test]
-//     fn test_is_active() {
-//         let mut player = ImplPlayer::new(streamer, streamer_pipe);
+        let sent_uri_lock = sent_uri.lock().unwrap();
+        assert_eq!(&*sent_uri_lock, "testuri");
+    }
 
-//         assert!(!player.is_active());
+    #[test]
+    fn test_play_when_streamer_active() {
+        let sent_message: Arc<Mutex<Message>> = Arc::new(Mutex::new(Message::None));
+        let sent_message_clone = Arc::clone(&sent_message);
+        let mut streamer = MockStreamer::new();
+        let mut streamer_pipe = MockStreamerPipe::new();
+        streamer.expect_is_running().return_const(true);
+        streamer_pipe
+            .expect_send()
+            .return_once(move |message| *sent_message_clone.lock().unwrap() = message);
 
-//         let faked_streamer_join_handle = thread::Builder::new()
-//             .spawn(move || {
-//                 thread::sleep(Duration::from_secs(2));
-//             })
-//             .unwrap();
+        let player = ImplPlayer::new(Arc::new(streamer), Arc::new(streamer_pipe));
 
-//         player.set_streamer_join_handle(faked_streamer_join_handle);
+        player.play("testuri");
 
-//         assert!(player.is_active());
-//         assert!(!player.get_streamer_join_handle_opt().unwrap().is_finished());
+        let sent_message_lock = &*sent_message.lock().unwrap();
+        assert!(matches!(sent_message_lock, Message::Next(_)));
+        assert!(if let Message::Next(uri) = sent_message_lock {
+            uri.eq("testuri")
+        } else {
+            false
+        });
+    }
 
-//         player.wait_until_end();
+    #[test]
+    fn test_pause() {
+        let sent_message: Arc<Mutex<Message>> = Arc::new(Mutex::new(Message::None));
+        let sent_message_clone = Arc::clone(&sent_message);
+        let mut streamer = MockStreamer::new();
+        let mut streamer_pipe = MockStreamerPipe::new();
+        streamer.expect_is_running().return_const(true);
+        streamer_pipe
+            .expect_send()
+            .return_once(move |message| *sent_message_clone.lock().unwrap() = message);
 
-//         assert!(!player.is_active());
-//         assert!(player.streamer_join_handle.is_null());
-//     }
-// }
+        let player = ImplPlayer::new(Arc::new(streamer), Arc::new(streamer_pipe));
+
+        player.pause();
+
+        let sent_message_lock = &*sent_message.lock().unwrap();
+        assert!(matches!(sent_message_lock, Message::Pause));
+    }
+
+    #[test]
+    fn test_stop() {
+        let sent_message: Arc<Mutex<Message>> = Arc::new(Mutex::new(Message::None));
+        let sent_message_clone = Arc::clone(&sent_message);
+        let mut streamer = MockStreamer::new();
+        let mut streamer_pipe = MockStreamerPipe::new();
+        streamer.expect_is_running().return_const(true);
+        streamer_pipe
+            .expect_send()
+            .return_once(move |message| *sent_message_clone.lock().unwrap() = message);
+
+        let player = ImplPlayer::new(Arc::new(streamer), Arc::new(streamer_pipe));
+
+        player.stop();
+
+        let sent_message_lock = &*sent_message.lock().unwrap();
+        assert!(matches!(sent_message_lock, Message::Stop));
+    }
+}

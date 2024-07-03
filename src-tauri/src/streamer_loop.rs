@@ -44,7 +44,7 @@ struct Data {
 #[derive(Debug)]
 pub(crate) struct ImplStreamerLoop {
     streamer_pipe: Arc<dyn StreamerPipe>,
-    receiver: Receiver<Status>,
+    receiver: Arc<Receiver<Status>>,
     status: Arc<Mutex<Status>>,
 }
 
@@ -54,7 +54,7 @@ unsafe impl Sync for ImplStreamerLoop {}
 impl ImplStreamerLoop {
     pub(crate) fn new(
         streamer_pipe: Arc<dyn StreamerPipe>,
-        receiver: Receiver<Status>,
+        receiver: Arc<Receiver<Status>>,
         status: Arc<Mutex<Status>>,
     ) -> Self {
         Self {
@@ -220,6 +220,10 @@ impl ImplStreamerLoop {
             .expect(format!("Unreadable streamer message: {json}").as_str());
 
         match message {
+            Message::None => {
+                eprintln!("Message with 'None' is an error.");
+                None
+            }
             Message::Pause => {
                 if data.is_playing {
                     gst_element_set_state(data.pipeline, GST_STATE_PAUSED);

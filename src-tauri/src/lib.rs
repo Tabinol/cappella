@@ -44,14 +44,14 @@ pub fn run() {
             let streamer_pipe: Arc<dyn StreamerPipe> = Arc::new(ImplStreamerPipe::new());
             let streamer_loop: Arc<dyn StreamerLoop> = Arc::new(ImplStreamerLoop::new(
                 Arc::clone(&streamer_pipe),
-                receiver,
+                Arc::new(receiver),
                 Arc::clone(&status),
             ));
             let streamer: Arc<dyn Streamer> = Arc::new(ImplStreamer::new(
                 Arc::clone(&streamer_pipe),
                 Arc::clone(&streamer_loop),
                 Arc::clone(&status),
-                sender,
+                Arc::new(sender),
             ));
             let player: Arc<dyn Player> = Arc::new(ImplPlayer::new(
                 Arc::clone(&streamer),

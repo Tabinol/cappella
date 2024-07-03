@@ -18,6 +18,7 @@ pub(crate) const MESSAGE_FIELD_JSON: &str = "JSON";
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub(crate) enum Message {
+    None,
     Pause,
     Next(String),
     Stop,
@@ -199,7 +200,7 @@ mod tests {
             let result_message: streamer_pipe::Message;
             let message;
 
-            streamer_pipe.send(streamer_pipe::Message::Next("newuri".to_string()));
+            streamer_pipe.send(streamer_pipe::Message::Next("new_uri".to_string()));
 
             unsafe {
                 let structure = gst_message_get_structure(MESSAGE.0);
@@ -215,7 +216,7 @@ mod tests {
             assert_eq!(name, MESSAGE_NAME);
             assert!(matches!(result_message, streamer_pipe::Message::Next(_)));
             assert!(if let streamer_pipe::Message::Next(uri) = result_message {
-                uri.eq("newuri")
+                uri.eq("new_uri")
             } else {
                 false
             });
