@@ -5,11 +5,16 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use dyn_clone::DynClone;
 use gstreamer::glib::gobject_ffi::G_TYPE_STRING;
 use gstreamer_sys::{
     gst_bus_post, gst_message_new_application, gst_structure_new, GstBus, GstStructure,
 };
+
+#[cfg(test)]
+use mockall::automock;
+
+pub(crate) const MESSAGE_NAME: &str = "APP_MSG";
+pub(crate) const MESSAGE_FIELD_JSON: &str = "JSON";
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub(crate) enum Message {
@@ -19,23 +24,19 @@ pub(crate) enum Message {
     End,
 }
 
-pub(crate) trait StreamerPipe: DynClone + Debug + Send + Sync {
+#[cfg_attr(test, automock)]
+pub(crate) trait StreamerPipe: Debug + Send + Sync {
     fn set_bus(&self, bus: *mut GstBus);
     fn send(&self, message: Message);
 }
 
-dyn_clone::clone_trait_object!(StreamerPipe);
-
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct ImplStreamerPipe {
     pub(crate) bus: Arc<Mutex<*mut GstBus>>,
 }
 
 unsafe impl Send for ImplStreamerPipe {}
 unsafe impl Sync for ImplStreamerPipe {}
-
-pub(crate) const MESSAGE_NAME: &str = "APP_MSG";
-pub(crate) const MESSAGE_FIELD_JSON: &str = "JSON";
 
 pub(crate) fn str_to_cstring(str: &str) -> CString {
     CString::new(str).unwrap()
@@ -62,6 +63,7 @@ impl ImplStreamerPipe {
         #[cfg(not(test))]
         if bus.is_null() {
             eprintln!("Unable to send the message to streamer.");
+            return;
         }
 
         unsafe {
@@ -129,7 +131,7 @@ mod tests {
     }
 
     mod tests {
-        use std::ptr::null_mut;
+        use std::{ptr::null_mut, sync::Mutex};
 
         use gstreamer::glib::ffi::{gboolean, GTRUE};
         use gstreamer_sys::{
@@ -147,6 +149,7 @@ mod tests {
         unsafe impl Sync for Message {}
 
         static mut MESSAGE: Message = Message(null_mut());
+        static LOCK: Mutex<()> = Mutex::new(());
 
         #[no_mangle]
         #[allow(unused_variables)]
@@ -160,6 +163,7 @@ mod tests {
 
         #[test]
         fn test_send_pause() {
+            let _lock = LOCK.lock().unwrap();
             let streamer_pipe = ImplStreamerPipe::new();
             let name;
             let result_message: streamer_pipe::Message;
@@ -188,7 +192,8 @@ mod tests {
         }
 
         #[test]
-        fn test_next() {
+        fn test_send_next() {
+            let _lock = LOCK.lock().unwrap();
             let streamer_pipe = ImplStreamerPipe::new();
             let name;
             let result_message: streamer_pipe::Message;
@@ -223,6 +228,7 @@ mod tests {
 
         #[test]
         fn test_send_stop() {
+            let _lock = LOCK.lock().unwrap();
             let streamer_pipe = ImplStreamerPipe::new();
             let name;
             let result_message: streamer_pipe::Message;
@@ -252,6 +258,7 @@ mod tests {
 
         #[test]
         fn test_send_end() {
+            let _lock = LOCK.lock().unwrap();
             let streamer_pipe = ImplStreamerPipe::new();
             let name;
             let result_message: streamer_pipe::Message;

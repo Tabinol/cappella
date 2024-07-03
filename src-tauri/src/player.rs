@@ -1,41 +1,38 @@
-use std::fmt::Debug;
-
-use dyn_clone::DynClone;
+use std::{fmt::Debug, sync::Arc};
 
 use crate::{
     streamer::Streamer,
     streamer_pipe::{Message, StreamerPipe},
 };
 
-pub(crate) trait Player: DynClone + Debug + Send + Sync {
-    fn play(&mut self, uri: &str);
-    fn pause(&mut self);
-    fn stop(&mut self);
-    fn end(&mut self);
+#[cfg(test)]
+use mockall::automock;
+
+#[cfg_attr(test, automock)]
+pub(crate) trait Player: Debug + Send + Sync {
+    fn play(&self, uri: &str);
+    fn pause(&self);
+    fn stop(&self);
+    fn end(&self);
 }
 
-dyn_clone::clone_trait_object!(Player);
-
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct ImplPlayer {
-    streamer: Box<dyn Streamer>,
-    streamer_pipe: Box<dyn StreamerPipe>,
+    streamer: Arc<dyn Streamer>,
+    streamer_pipe: Arc<dyn StreamerPipe>,
 }
-
-unsafe impl Send for ImplPlayer {}
-unsafe impl Sync for ImplPlayer {}
 
 impl ImplPlayer {
-    pub(crate) fn new(streamer: Box<dyn Streamer>, streamer_pipe: Box<dyn StreamerPipe>) -> Self {
+    pub(crate) fn new(streamer: Arc<dyn Streamer>, streamer_pipe: Arc<dyn StreamerPipe>) -> Self {
         Self {
             streamer,
             streamer_pipe,
         }
     }
 
-    fn get_pipe_opt(&mut self) -> Option<Box<(dyn StreamerPipe + 'static)>> {
+    fn get_pipe_opt(&self) -> Option<Arc<dyn StreamerPipe>> {
         if self.streamer.is_running() {
-            return Some(self.streamer_pipe.clone());
+            return Some(Arc::clone(&self.streamer_pipe));
         }
 
         None
@@ -43,7 +40,7 @@ impl ImplPlayer {
 }
 
 impl Player for ImplPlayer {
-    fn play(&mut self, uri: &str) {
+    fn play(&self, uri: &str) {
         if let Some(streamer_pipe) = self.get_pipe_opt() {
             streamer_pipe.send(Message::Next(uri.to_owned()));
             return;
@@ -52,56 +49,68 @@ impl Player for ImplPlayer {
         self.streamer.play(uri);
     }
 
-    fn pause(&mut self) {
+    fn pause(&self) {
         if let Some(streamer_pipe) = self.get_pipe_opt() {
             streamer_pipe.send(Message::Pause);
         }
     }
 
-    fn stop(&mut self) {
+    fn stop(&self) {
         if let Some(streamer_pipe) = self.get_pipe_opt() {
             streamer_pipe.send(Message::Stop);
         }
     }
 
-    fn end(&mut self) {
+    fn end(&self) {
         self.streamer.end();
     }
 }
 
-// // #[cfg(test)]
-// // mod tests {
-// //     use std::time::Duration;
+// #[cfg(test)]
+// mod tests {
+//     use crate::{player::ImplPlayer, streamer::Streamer};
 
-// //     use crate::{my_app_handle::MyAppHandle, player::Player};
+//     #[derive(Clone, Debug)]
+//     struct MockStreamer {}
 
-// //     trait MockAppHandle {}
+//     impl Streamer for MockStreamer {
+//         fn is_running(&self) -> bool {
+//             todo!()
+//         }
 
-// //     impl<T: MyAppHandle> MockAppHandle for T {}
+//         fn start(&mut self) {
+//             todo!()
+//         }
 
-// //     struct Streamer {}
-// //     struct StreamerPipe {}
+//         fn play(&mut self, uri: &str) {
+//             todo!()
+//         }
 
-// //     #[test]
-// //     fn test_is_active() {
-// //         let mut player = Player::new(Streamer {}, StreamerPipe {});
+//         fn end(&mut self) {
+//             todo!()
+//         }
+//     }
 
-// //         assert!(!player.is_active());
+//     #[test]
+//     fn test_is_active() {
+//         let mut player = ImplPlayer::new(streamer, streamer_pipe);
 
-// //         let faked_streamer_join_handle = thread::Builder::new()
-// //             .spawn(move || {
-// //                 thread::sleep(Duration::from_secs(2));
-// //             })
-// //             .unwrap();
+//         assert!(!player.is_active());
 
-// //         player.set_streamer_join_handle(faked_streamer_join_handle);
+//         let faked_streamer_join_handle = thread::Builder::new()
+//             .spawn(move || {
+//                 thread::sleep(Duration::from_secs(2));
+//             })
+//             .unwrap();
 
-// //         assert!(player.is_active());
-// //         assert!(!player.get_streamer_join_handle_opt().unwrap().is_finished());
+//         player.set_streamer_join_handle(faked_streamer_join_handle);
 
-// //         player.wait_until_end();
+//         assert!(player.is_active());
+//         assert!(!player.get_streamer_join_handle_opt().unwrap().is_finished());
 
-// //         assert!(!player.is_active());
-// //         assert!(player.streamer_join_handle.is_null());
-// //     }
-// // }
+//         player.wait_until_end();
+
+//         assert!(!player.is_active());
+//         assert!(player.streamer_join_handle.is_null());
+//     }
+// }

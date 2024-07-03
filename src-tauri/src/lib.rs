@@ -1,32 +1,34 @@
-use std::sync::{Mutex, OnceLock};
+use std::sync::{mpsc::channel, Arc, Mutex, OnceLock};
 
 use player::{ImplPlayer, Player};
-use streamer::{ImplStreamer, Streamer};
+use streamer::{ImplStreamer, Status, Streamer};
+use streamer_loop::{ImplStreamerLoop, StreamerLoop};
 use streamer_pipe::{ImplStreamerPipe, StreamerPipe};
 use tauri::{AppHandle, Manager};
 
 mod player;
 mod streamer;
+mod streamer_loop;
 mod streamer_pipe;
 
 pub(crate) const MAIN_WINDOW_LABEL: &str = "main";
 
-static PLAYER: OnceLock<Mutex<Box<dyn Player>>> = OnceLock::new();
-static APP_HANDLE: OnceLock<Box<AppHandle>> = OnceLock::new();
+static PLAYER: OnceLock<Arc<dyn Player>> = OnceLock::new();
+static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 
 #[tauri::command]
 fn play(uri: &str) {
-    PLAYER.get().unwrap().lock().unwrap().play(uri);
+    PLAYER.get().unwrap().play(uri);
 }
 
 #[tauri::command]
 fn pause() {
-    PLAYER.get().unwrap().lock().unwrap().pause();
+    PLAYER.get().unwrap().pause();
 }
 
 #[tauri::command]
 fn stop() {
-    PLAYER.get().unwrap().lock().unwrap().stop();
+    PLAYER.get().unwrap().stop();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -34,19 +36,30 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
-            let app_handle = Box::new(app.app_handle().clone());
+            let app_handle = app.app_handle().clone();
             APP_HANDLE.set(app_handle).unwrap();
 
-            let streamer_pipe: Box<dyn StreamerPipe> = Box::new(ImplStreamerPipe::new());
-            let mut streamer: Box<dyn Streamer> =
-                Box::new(ImplStreamer::new(streamer_pipe.clone()));
-            let player: Mutex<Box<dyn Player>> = Mutex::new(Box::new(ImplPlayer::new(
-                streamer.clone(),
-                streamer_pipe.clone(),
-            )));
-            PLAYER.set(player).unwrap();
+            let (sender, receiver) = channel::<Status>();
+            let status = Arc::new(Mutex::new(streamer::Status::None));
+            let streamer_pipe: Arc<dyn StreamerPipe> = Arc::new(ImplStreamerPipe::new());
+            let streamer_loop: Arc<dyn StreamerLoop> = Arc::new(ImplStreamerLoop::new(
+                Arc::clone(&streamer_pipe),
+                receiver,
+                Arc::clone(&status),
+            ));
+            let streamer: Arc<dyn Streamer> = Arc::new(ImplStreamer::new(
+                Arc::clone(&streamer_pipe),
+                Arc::clone(&streamer_loop),
+                Arc::clone(&status),
+                sender,
+            ));
+            let player: Arc<dyn Player> = Arc::new(ImplPlayer::new(
+                Arc::clone(&streamer),
+                Arc::clone(&streamer_pipe),
+            ));
 
-            streamer.start();
+            PLAYER.set(player).unwrap();
+            streamer.start_thread();
 
             Ok(())
         })
@@ -55,7 +68,7 @@ pub fn run() {
             if window.label().eq(MAIN_WINDOW_LABEL) {
                 match event {
                     tauri::WindowEvent::Destroyed => {
-                        PLAYER.get().unwrap().lock().unwrap().end();
+                        PLAYER.get().unwrap().end();
                     }
                     _ => {}
                 }
