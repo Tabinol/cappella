@@ -9,7 +9,7 @@ use std::{
 
 use dyn_clone::DynClone;
 
-use crate::{
+use super::{
     streamer_loop::StreamerLoop,
     streamer_pipe::{Message, StreamerPipe},
 };

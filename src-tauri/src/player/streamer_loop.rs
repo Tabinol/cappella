@@ -6,10 +6,15 @@ use std::{
 use dyn_clone::DynClone;
 
 use crate::{
-    frontend_pipe::FrontendPipe,
-    local_gstreamer::{LocalGstreamer, GST_CLOCK_TIME_NONE},
-    local_gstreamer_message::{LocalGstreamerMessage, MsgType},
-    local_gstreamer_pipeline::{LocalGstreamerPipeline, GST_STATE_PAUSED, GST_STATE_PLAYING},
+    frontend::frontend_pipe::FrontendPipe,
+    gstreamer::{
+        gstreamer::{Gstreamer, GST_CLOCK_TIME_NONE},
+        gstreamer_message::{GstreamerMessage, MsgType},
+        gstreamer_pipeline::{GstreamerPipeline, GST_STATE_PAUSED, GST_STATE_PLAYING},
+    },
+};
+
+use super::{
     streamer::Status,
     streamer_pipe::{Message, MESSAGE_FIELD_JSON, MESSAGE_NAME},
 };
@@ -30,7 +35,7 @@ struct Data {
 #[derive(Clone, Debug)]
 pub(crate) struct ImplStreamerLoop {
     frontend_pipe: Box<dyn FrontendPipe>,
-    local_gstreamer: Box<dyn LocalGstreamer>,
+    gstreamer: Box<dyn Gstreamer>,
     status: Arc<Mutex<Status>>,
     streamer_thread_lock: Arc<Mutex<()>>,
 }
@@ -38,13 +43,13 @@ pub(crate) struct ImplStreamerLoop {
 impl ImplStreamerLoop {
     pub(crate) fn new(
         frontend_pipe: Box<dyn FrontendPipe>,
-        local_gstreamer: Box<dyn LocalGstreamer>,
+        gstreamer: Box<dyn Gstreamer>,
         status: Arc<Mutex<Status>>,
         streamer_thread_lock: Arc<Mutex<()>>,
     ) -> Box<dyn StreamerLoop> {
         Box::new(Self {
             frontend_pipe,
-            local_gstreamer,
+            gstreamer,
             status,
             streamer_thread_lock,
         })
@@ -85,16 +90,16 @@ impl ImplStreamerLoop {
     }
 
     fn gst(&self, data: &mut Data) {
-        self.local_gstreamer.init();
+        self.gstreamer.init();
 
-        let pipeline = self.local_gstreamer.launch(&data.uri);
+        let pipeline = self.gstreamer.launch(&data.uri);
 
         self.loop_gst(data, &pipeline);
     }
 
-    fn loop_gst(&self, data: &mut Data, pipeline: &Box<dyn LocalGstreamerPipeline>) {
+    fn loop_gst(&self, data: &mut Data, pipeline: &Box<dyn GstreamerPipeline>) {
         'end_gst: loop {
-            let msg_opt = self.local_gstreamer.bus_timed_pop_filtered();
+            let msg_opt = self.gstreamer.bus_timed_pop_filtered();
 
             let status_clone = Arc::clone(&self.status);
             let mut status_lock = status_clone.lock().unwrap();
@@ -120,8 +125,8 @@ impl ImplStreamerLoop {
     fn handle_message(
         &self,
         data: &mut Data,
-        msg: &Box<dyn LocalGstreamerMessage>,
-        pipeline: &Box<dyn LocalGstreamerPipeline>,
+        msg: &Box<dyn GstreamerMessage>,
+        pipeline: &Box<dyn GstreamerPipeline>,
     ) -> Option<Status> {
         match msg.msg_type() {
             MsgType::Error => {
@@ -152,8 +157,8 @@ impl ImplStreamerLoop {
     fn handle_application_message(
         &self,
         data: &mut Data,
-        pipeline: &Box<dyn LocalGstreamerPipeline>,
-        msg: &Box<dyn LocalGstreamerMessage>,
+        pipeline: &Box<dyn GstreamerPipeline>,
+        msg: &Box<dyn GstreamerMessage>,
     ) -> Option<Status> {
         let name = msg.name();
 
@@ -199,7 +204,7 @@ impl ImplStreamerLoop {
         }
     }
 
-    fn update_position(&self, data: &mut Data, pipeline: &Box<dyn LocalGstreamerPipeline>) {
+    fn update_position(&self, data: &mut Data, pipeline: &Box<dyn GstreamerPipeline>) {
         let current: i64 = if let Some(position) = pipeline.query_position() {
             position
         } else {

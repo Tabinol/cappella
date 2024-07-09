@@ -3,15 +3,15 @@ use std::fmt::Debug;
 use dyn_clone::DynClone;
 use gstreamer_sys::{
     gst_message_parse_state_changed, gst_message_unref, gst_structure_get_name,
-    gst_structure_get_string, GstMessage, GstState, GstStructure, GST_MESSAGE_APPLICATION,
-    GST_MESSAGE_DURATION_CHANGED, GST_MESSAGE_EOS, GST_MESSAGE_ERROR, GST_MESSAGE_STATE_CHANGED,
-    GST_STATE_NULL,
+    gst_structure_get_string, GstMessage, GstStructure,
 };
 
-use crate::{
+use crate::utils::{
+    cstring_converter::{cstring_ptr_to_str, str_to_cstring},
     pointer::{PointerConst, PointerMut},
-    utils::{cstring_ptr_to_str, str_to_cstring},
 };
+
+use super::gstreamer_pipeline::{GstState, GST_STATE_NULL};
 
 #[derive(Clone, Debug)]
 pub(crate) enum MsgType {
@@ -23,7 +23,7 @@ pub(crate) enum MsgType {
     Unsupported,
 }
 
-pub(crate) trait LocalGstreamerMessage: Debug + DynClone + Send + Sync {
+pub(crate) trait GstreamerMessage: Debug + DynClone + Send + Sync {
     fn msg_type(&self) -> MsgType;
     fn parse_state_changed(&self);
     fn name(&self) -> &str;
@@ -31,18 +31,18 @@ pub(crate) trait LocalGstreamerMessage: Debug + DynClone + Send + Sync {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ImplLocalGstreamerMessage {
+pub(crate) struct ImplGstreamerMessage {
     gst_message: PointerMut<GstMessage>,
     gst_structure: PointerConst<GstStructure>,
 }
 
-dyn_clone::clone_trait_object!(LocalGstreamerMessage);
+dyn_clone::clone_trait_object!(GstreamerMessage);
 
-impl ImplLocalGstreamerMessage {
+impl ImplGstreamerMessage {
     pub(crate) fn new(
         gst_message: PointerMut<GstMessage>,
         gst_structure: PointerConst<GstStructure>,
-    ) -> Box<dyn LocalGstreamerMessage> {
+    ) -> Box<dyn GstreamerMessage> {
         Box::new(Self {
             gst_message,
             gst_structure,
@@ -50,7 +50,7 @@ impl ImplLocalGstreamerMessage {
     }
 }
 
-impl LocalGstreamerMessage for ImplLocalGstreamerMessage {
+impl GstreamerMessage for ImplGstreamerMessage {
     fn msg_type(&self) -> MsgType {
         match unsafe { self.gst_message.get().read() }.type_ {
             GST_MESSAGE_ERROR => MsgType::Error,
@@ -91,7 +91,7 @@ impl LocalGstreamerMessage for ImplLocalGstreamerMessage {
     }
 }
 
-impl Drop for ImplLocalGstreamerMessage {
+impl Drop for ImplGstreamerMessage {
     fn drop(&mut self) {
         println!("Drop message!");
         unsafe { gst_message_unref(self.gst_message.get()) };

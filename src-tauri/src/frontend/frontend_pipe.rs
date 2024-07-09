@@ -2,7 +2,7 @@ use std::fmt::Debug;
 
 use dyn_clone::DynClone;
 
-use crate::local_app_handle::LocalAppHandle;
+use crate::tauri::tauri_app_handle::TauriAppHandle;
 
 const PLAYER_EVENT_NAME: &str = "PLAYER_EVENT";
 
@@ -19,12 +19,12 @@ dyn_clone::clone_trait_object!(FrontendPipe);
 
 #[derive(Clone, Debug)]
 pub(crate) struct ImplFrontendPipe {
-    local_app_handle: Box<dyn LocalAppHandle>,
+    tauri_app_handle: Box<dyn TauriAppHandle>,
 }
 
 impl ImplFrontendPipe {
-    pub(crate) fn new(local_app_handle: Box<dyn LocalAppHandle>) -> Box<dyn FrontendPipe> {
-        Box::new(Self { local_app_handle })
+    pub(crate) fn new(tauri_app_handle: Box<dyn TauriAppHandle>) -> Box<dyn FrontendPipe> {
+        Box::new(Self { tauri_app_handle })
     }
 }
 

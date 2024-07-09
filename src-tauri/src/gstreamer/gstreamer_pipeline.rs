@@ -10,7 +10,7 @@ use gstreamer_sys::{
     gst_object_unref, GstBus, GstElement, GstObject, GST_FORMAT_TIME,
 };
 
-use crate::pointer::PointerMut;
+use crate::utils::pointer::PointerMut;
 
 pub(crate) type GstState = i32;
 #[allow(unused)]
@@ -21,30 +21,30 @@ pub(crate) const GST_STATE_READY: GstState = gstreamer_sys::GST_STATE_READY;
 pub(crate) const GST_STATE_PAUSED: GstState = gstreamer_sys::GST_STATE_PAUSED;
 pub(crate) const GST_STATE_PLAYING: GstState = gstreamer_sys::GST_STATE_PLAYING;
 
-pub(crate) trait LocalGstreamerPipeline: Debug + DynClone + Send + Sync {
+pub(crate) trait GstreamerPipeline: Debug + DynClone + Send + Sync {
     fn set_state(&self, gst_state: GstState);
     fn query_position(&self) -> Option<i64>;
     fn query_duration(&self) -> Option<i64>;
 }
 
-dyn_clone::clone_trait_object!(LocalGstreamerPipeline);
+dyn_clone::clone_trait_object!(GstreamerPipeline);
 
 #[derive(Clone, Debug)]
-pub(crate) struct ImplLocalGstreamerPipeline {
+pub(crate) struct ImplGstreamerPipeline {
     gst_element: PointerMut<GstElement>,
     bus: Arc<Mutex<PointerMut<GstBus>>>,
 }
 
-impl ImplLocalGstreamerPipeline {
+impl ImplGstreamerPipeline {
     pub(crate) fn new(
         gst_element: PointerMut<GstElement>,
         bus: Arc<Mutex<PointerMut<GstBus>>>,
-    ) -> Box<dyn LocalGstreamerPipeline> {
+    ) -> Box<dyn GstreamerPipeline> {
         Box::new(Self { gst_element, bus })
     }
 }
 
-impl LocalGstreamerPipeline for ImplLocalGstreamerPipeline {
+impl GstreamerPipeline for ImplGstreamerPipeline {
     fn set_state(&self, gst_state: GstState) {
         unsafe { gst_element_set_state(self.gst_element.get(), gst_state) };
     }
@@ -76,7 +76,7 @@ impl LocalGstreamerPipeline for ImplLocalGstreamerPipeline {
     }
 }
 
-impl Drop for ImplLocalGstreamerPipeline {
+impl Drop for ImplGstreamerPipeline {
     fn drop(&mut self) {
         println!("Drop pipeline!");
         let mut bus = self.bus.lock().unwrap();

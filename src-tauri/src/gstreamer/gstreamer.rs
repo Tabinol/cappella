@@ -15,40 +15,43 @@ use gstreamer_sys::{
     GST_STATE_CHANGE_FAILURE, GST_STATE_PLAYING,
 };
 
-use crate::{
-    local_gstreamer_message::{ImplLocalGstreamerMessage, LocalGstreamerMessage},
-    local_gstreamer_pipeline::{ImplLocalGstreamerPipeline, LocalGstreamerPipeline},
+use crate::utils::{
+    cstring_converter::{str_to_cstring, string_to_cstring},
     pointer::{PointerConst, PointerMut},
-    utils::{str_to_cstring, string_to_cstring},
+};
+
+use super::{
+    gstreamer_message::{GstreamerMessage, ImplGstreamerMessage},
+    gstreamer_pipeline::{GstreamerPipeline, ImplGstreamerPipeline},
 };
 
 pub(crate) const GST_CLOCK_TIME_NONE: i64 = gstreamer_sys::GST_CLOCK_TIME_NONE as i64;
 
 const UPDATE_POSITION_MILLISECONDS: i64 = 100;
 
-pub(crate) trait LocalGstreamer: Debug + DynClone + Send + Sync {
+pub(crate) trait Gstreamer: Debug + DynClone + Send + Sync {
     fn init(&self);
-    fn launch(&self, uri: &str) -> Box<dyn LocalGstreamerPipeline>;
-    fn bus_timed_pop_filtered(&self) -> Option<Box<dyn LocalGstreamerMessage>>;
+    fn launch(&self, uri: &str) -> Box<dyn GstreamerPipeline>;
+    fn bus_timed_pop_filtered(&self) -> Option<Box<dyn GstreamerMessage>>;
     fn send_to_gst(&self, name: &str, key: &str, value: &str);
 }
 
-dyn_clone::clone_trait_object!(LocalGstreamer);
+dyn_clone::clone_trait_object!(Gstreamer);
 
 #[derive(Clone, Debug)]
-pub(crate) struct ImplLocalGstreamer {
+pub(crate) struct ImplGstreamer {
     bus: Arc<Mutex<PointerMut<GstBus>>>,
 }
 
-impl ImplLocalGstreamer {
-    pub(crate) fn new() -> Box<dyn LocalGstreamer> {
+impl ImplGstreamer {
+    pub(crate) fn new() -> Box<dyn Gstreamer> {
         Box::new(Self {
             bus: Arc::new(Mutex::new(PointerMut::new(null_mut()))),
         })
     }
 }
 
-impl LocalGstreamer for ImplLocalGstreamer {
+impl Gstreamer for ImplGstreamer {
     fn init(&self) {
         let args = std::env::args()
             .map(|arg| string_to_cstring(arg))
@@ -62,7 +65,7 @@ impl LocalGstreamer for ImplLocalGstreamer {
         unsafe { gst_init(&mut (c_args.len() as i32), &mut c_args.as_mut_ptr()) };
     }
 
-    fn launch(&self, uri: &str) -> Box<dyn LocalGstreamerPipeline> {
+    fn launch(&self, uri: &str) -> Box<dyn GstreamerPipeline> {
         let pipeline_description = string_to_cstring(format!("playbin uri=\"{uri}\""));
 
         let pipeline = PointerMut::new(unsafe {
@@ -80,10 +83,10 @@ impl LocalGstreamer for ImplLocalGstreamer {
             pipeline
         });
 
-        ImplLocalGstreamerPipeline::new(pipeline, Arc::clone(&self.bus))
+        ImplGstreamerPipeline::new(pipeline, Arc::clone(&self.bus))
     }
 
-    fn bus_timed_pop_filtered(&self) -> Option<Box<dyn LocalGstreamerMessage>> {
+    fn bus_timed_pop_filtered(&self) -> Option<Box<dyn GstreamerMessage>> {
         let msg = PointerMut::new(unsafe {
             gst_bus_timed_pop_filtered(
                 self.bus.lock().unwrap().get(),
@@ -98,7 +101,7 @@ impl LocalGstreamer for ImplLocalGstreamer {
 
         if !msg.get().is_null() {
             let structure = PointerConst::new(unsafe { gst_message_get_structure(msg.get()) });
-            return Some(ImplLocalGstreamerMessage::new(msg, structure));
+            return Some(ImplGstreamerMessage::new(msg, structure));
         }
 
         None
