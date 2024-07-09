@@ -1,70 +1,57 @@
 use std::{
-    ffi::{c_char, CString},
     fmt::Debug,
-    ptr::null_mut,
     sync::{mpsc::Receiver, Arc, Mutex},
 };
 
-use gstreamer_sys::{
-    gst_bus_timed_pop_filtered, gst_element_get_bus, gst_element_query_duration,
-    gst_element_query_position, gst_element_set_state, gst_init, gst_message_get_structure,
-    gst_message_parse_state_changed, gst_message_unref, gst_object_unref, gst_parse_launch,
-    gst_structure_get_name, gst_structure_get_string, GstBus, GstElement, GstMessage, GstObject,
-    GstState, GST_CLOCK_TIME_NONE, GST_FORMAT_TIME, GST_MESSAGE_APPLICATION,
-    GST_MESSAGE_DURATION_CHANGED, GST_MESSAGE_EOS, GST_MESSAGE_ERROR, GST_MESSAGE_STATE_CHANGED,
-    GST_MSECOND, GST_STATE_CHANGE_FAILURE, GST_STATE_NULL, GST_STATE_PAUSED, GST_STATE_PLAYING,
-};
+use dyn_clone::DynClone;
 
 use crate::{
+    frontend_pipe::FrontendPipe,
+    local_gstreamer::{LocalGstreamer, GST_CLOCK_TIME_NONE},
+    local_gstreamer_message::{LocalGstreamerMessage, MsgType},
+    local_gstreamer_pipeline::{LocalGstreamerPipeline, GST_STATE_PAUSED, GST_STATE_PLAYING},
     streamer::Status,
-    streamer_pipe::{
-        cstring_ptr_to_str, str_to_cstring, string_to_cstring, Message, StreamerPipe,
-        MESSAGE_FIELD_JSON, MESSAGE_NAME,
-    },
+    streamer_pipe::{Message, MESSAGE_FIELD_JSON, MESSAGE_NAME},
 };
 
-#[cfg(test)]
-use mockall::automock;
-
-const UPDATE_POSITION_MILLISECONDS: i64 = 100;
-
-#[cfg_attr(test, automock)]
-pub(crate) trait StreamerLoop: Debug + Send + Sync {
-    fn run(&self);
+pub(crate) trait StreamerLoop: Debug + DynClone + Send + Sync {
+    fn run(&self, receiver: Receiver<Status>);
 }
 
-#[derive(Debug)]
+dyn_clone::clone_trait_object!(StreamerLoop);
+
+#[derive(Clone, Debug)]
 struct Data {
     uri: String,
-    pipeline: *mut GstElement,
     is_playing: bool,
     duration: i64,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct ImplStreamerLoop {
-    streamer_pipe: Arc<dyn StreamerPipe>,
-    receiver: Arc<Receiver<Status>>,
+    frontend_pipe: Box<dyn FrontendPipe>,
+    local_gstreamer: Box<dyn LocalGstreamer>,
     status: Arc<Mutex<Status>>,
+    streamer_thread_lock: Arc<Mutex<()>>,
 }
-
-unsafe impl Send for ImplStreamerLoop {}
-unsafe impl Sync for ImplStreamerLoop {}
 
 impl ImplStreamerLoop {
     pub(crate) fn new(
-        streamer_pipe: Arc<dyn StreamerPipe>,
-        receiver: Arc<Receiver<Status>>,
+        frontend_pipe: Box<dyn FrontendPipe>,
+        local_gstreamer: Box<dyn LocalGstreamer>,
         status: Arc<Mutex<Status>>,
-    ) -> Self {
-        Self {
-            streamer_pipe,
-            receiver,
+        streamer_thread_lock: Arc<Mutex<()>>,
+    ) -> Box<dyn StreamerLoop> {
+        Box::new(Self {
+            frontend_pipe,
+            local_gstreamer,
             status,
-        }
+            streamer_thread_lock,
+        })
     }
 
-    fn gst_thread(&self) {
+    fn gst_thread(&self, receiver: Receiver<Status>) {
+        let _streamer_thread_lock = self.streamer_thread_lock.lock().unwrap();
         *self.status.lock().unwrap() = Status::Wait;
 
         'end_gst_thread: loop {
@@ -72,18 +59,17 @@ impl ImplStreamerLoop {
             let mut current_status = status_clone.lock().unwrap().clone();
 
             if matches!(current_status, Status::Wait) {
-                current_status = self.receiver.recv().unwrap();
+                current_status = receiver.recv().unwrap();
                 *status_clone.lock().unwrap() = current_status.clone();
             }
 
             if let Status::Play(uri) = current_status {
                 let mut data = Data {
                     uri: uri.to_owned(),
-                    pipeline: null_mut(),
                     is_playing: true,
-                    duration: GST_CLOCK_TIME_NONE as i64,
+                    duration: GST_CLOCK_TIME_NONE,
                 };
-                unsafe { self.gst(&mut data) };
+                self.gst(&mut data);
             }
 
             let mut status_lock = status_clone.lock().unwrap();
@@ -98,63 +84,30 @@ impl ImplStreamerLoop {
         }
     }
 
-    unsafe fn gst(&self, data: &mut Data) {
-        let args = std::env::args()
-            .map(|arg| string_to_cstring(arg))
-            .collect::<Vec<CString>>();
+    fn gst(&self, data: &mut Data) {
+        self.local_gstreamer.init();
 
-        let mut c_args = args
-            .iter()
-            .map(|arg| arg.clone().into_raw())
-            .collect::<Vec<*mut c_char>>();
+        let pipeline = self.local_gstreamer.launch(&data.uri);
 
-        gst_init(&mut (c_args.len() as i32), &mut c_args.as_mut_ptr());
-
-        let pipeline_description = str_to_cstring(format!("playbin uri=\"{}\"", data.uri).as_str());
-        data.pipeline = gst_parse_launch(pipeline_description.as_ptr(), null_mut());
-
-        let bus = gst_element_get_bus(data.pipeline);
-        self.streamer_pipe.set_bus(bus);
-
-        if gst_element_set_state(data.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE {
-            gst_object_unref(data.pipeline as *mut GstObject);
-            panic!("GStreamer returns a failure.");
-        }
-
-        self.loop_gst(data, bus);
-
-        self.streamer_pipe.set_bus(null_mut());
-        gst_object_unref(bus as *mut GstObject);
-        gst_element_set_state(data.pipeline, GST_STATE_NULL);
-        gst_object_unref(data.pipeline as *mut GstObject);
+        self.loop_gst(data, &pipeline);
     }
 
-    unsafe fn loop_gst(&self, data: &mut Data, bus: *mut GstBus) {
+    fn loop_gst(&self, data: &mut Data, pipeline: &Box<dyn LocalGstreamerPipeline>) {
         'end_gst: loop {
-            let msg = gst_bus_timed_pop_filtered(
-                bus,
-                (UPDATE_POSITION_MILLISECONDS * GST_MSECOND) as u64,
-                GST_MESSAGE_STATE_CHANGED
-                    | GST_MESSAGE_ERROR
-                    | GST_MESSAGE_EOS
-                    | GST_MESSAGE_DURATION_CHANGED
-                    | GST_MESSAGE_APPLICATION,
-            );
+            let msg_opt = self.local_gstreamer.bus_timed_pop_filtered();
 
             let status_clone = Arc::clone(&self.status);
             let mut status_lock = status_clone.lock().unwrap();
 
-            if !msg.is_null() {
-                let new_status_opt = self.handle_message(data, msg);
+            if let Some(msg) = msg_opt {
+                let new_status_opt = self.handle_message(data, &msg, pipeline);
 
                 if let Some(new_status) = new_status_opt {
                     *status_lock = new_status;
                 }
-
-                gst_message_unref(msg);
             } else {
                 if data.is_playing {
-                    self.update_position(data);
+                    self.update_position(data, pipeline);
                 }
             }
 
@@ -164,34 +117,31 @@ impl ImplStreamerLoop {
         }
     }
 
-    unsafe fn handle_message(&self, data: &mut Data, msg: *mut GstMessage) -> Option<Status> {
-        match msg.read().type_ {
-            GST_MESSAGE_ERROR => {
+    fn handle_message(
+        &self,
+        data: &mut Data,
+        msg: &Box<dyn LocalGstreamerMessage>,
+        pipeline: &Box<dyn LocalGstreamerPipeline>,
+    ) -> Option<Status> {
+        match msg.msg_type() {
+            MsgType::Error => {
                 eprintln!("Error received from element.");
                 Some(Status::Wait)
             }
-            GST_MESSAGE_EOS => {
+            MsgType::Eos => {
                 // TODO remove?
                 println!("End-Of-Stream reached.");
                 Some(Status::Wait)
             }
-            GST_MESSAGE_DURATION_CHANGED => {
+            MsgType::DurationChanged => {
                 data.duration = GST_CLOCK_TIME_NONE as i64;
                 None
             }
-            GST_MESSAGE_STATE_CHANGED => {
-                let mut old_state: GstState = GST_STATE_NULL;
-                let mut new_state: GstState = GST_STATE_NULL;
-                let mut pending_state: GstState = GST_STATE_NULL;
-                gst_message_parse_state_changed(
-                    msg,
-                    &mut old_state,
-                    &mut new_state,
-                    &mut pending_state,
-                );
+            MsgType::StateChanged => {
+                msg.parse_state_changed();
                 None
             }
-            GST_MESSAGE_APPLICATION => self.handle_application_message(data, msg),
+            MsgType::Application => self.handle_application_message(data, pipeline, msg),
             _ => {
                 eprintln!("Unexpected message received");
                 None
@@ -199,23 +149,20 @@ impl ImplStreamerLoop {
         }
     }
 
-    unsafe fn handle_application_message(
+    fn handle_application_message(
         &self,
         data: &mut Data,
-        msg: *mut GstMessage,
+        pipeline: &Box<dyn LocalGstreamerPipeline>,
+        msg: &Box<dyn LocalGstreamerMessage>,
     ) -> Option<Status> {
-        let structure = gst_message_get_structure(msg);
-        let name_ptr = gst_structure_get_name(structure);
-        let name = cstring_ptr_to_str(name_ptr);
+        let name = msg.name();
 
         if name.ne(MESSAGE_NAME) {
             eprintln!("Streamer pipe message name error: {name}");
             return None;
         }
 
-        let field_json = str_to_cstring(MESSAGE_FIELD_JSON);
-        let json_ptr = gst_structure_get_string(structure, field_json.as_ptr());
-        let json = cstring_ptr_to_str(json_ptr);
+        let json = msg.read(MESSAGE_FIELD_JSON);
         let message = serde_json::from_str(json)
             .expect(format!("Unreadable streamer message: {json}").as_str());
 
@@ -226,10 +173,10 @@ impl ImplStreamerLoop {
             }
             Message::Pause => {
                 if data.is_playing {
-                    gst_element_set_state(data.pipeline, GST_STATE_PAUSED);
+                    pipeline.set_state(GST_STATE_PAUSED);
                     data.is_playing = false;
                 } else {
-                    gst_element_set_state(data.pipeline, GST_STATE_PLAYING);
+                    pipeline.set_state(GST_STATE_PLAYING);
                     data.is_playing = true;
                 }
                 None
@@ -252,17 +199,18 @@ impl ImplStreamerLoop {
         }
     }
 
-    unsafe fn update_position(&self, data: &mut Data) {
-        let mut current: i64 = -1;
-
-        if !gst_element_query_position(data.pipeline, GST_FORMAT_TIME, &mut current).is_positive() {
+    fn update_position(&self, data: &mut Data, pipeline: &Box<dyn LocalGstreamerPipeline>) {
+        let current: i64 = if let Some(position) = pipeline.query_position() {
+            position
+        } else {
             eprintln!("Could not query current position.");
-        }
+            -1
+        };
 
         if data.duration == GST_CLOCK_TIME_NONE as i64 {
-            if gst_element_query_duration(data.pipeline, GST_FORMAT_TIME, &mut data.duration)
-                .is_negative()
-            {
+            if let Some(duration) = pipeline.query_duration() {
+                data.duration = duration;
+            } else {
                 eprintln!("Could not query current duration.");
             }
         }
@@ -273,7 +221,7 @@ impl ImplStreamerLoop {
 }
 
 impl StreamerLoop for ImplStreamerLoop {
-    fn run(&self) {
-        self.gst_thread();
+    fn run(&self, receiver: Receiver<Status>) {
+        self.gst_thread(receiver);
     }
 }

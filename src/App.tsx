@@ -2,7 +2,8 @@ import {
   CaretRightOutlined,
   PauseOutlined,
   StepBackwardOutlined,
-  StepForwardOutlined
+  StepForwardOutlined,
+  StopOutlined
 } from '@ant-design/icons';
 import { invoke } from '@tauri-apps/api/core';
 import { Button, Col, Flex, Row, Slider } from 'antd';
@@ -14,6 +15,13 @@ function App() {
         <Col flex="none">
           <Flex gap="small" wrap="wrap">
             <Button type="primary" shape="circle" size="large" icon={<StepBackwardOutlined />} />
+            <Button
+              type="primary"
+              shape="circle"
+              size="large"
+              icon={<StopOutlined />}
+              onClick={(_) => invoke('stop')}
+            />
             <Button
               type="primary"
               shape="circle"
