@@ -1,15 +1,12 @@
 use std::fmt::Debug;
 
-use dyn_clone::DynClone;
 use gstreamer_sys::{
     gst_message_parse_state_changed, gst_message_unref, gst_structure_get_name,
-    gst_structure_get_string, GstMessage, GstStructure,
+    gst_structure_get_string, GstMessage, GstStructure, GST_MESSAGE_APPLICATION,
+    GST_MESSAGE_DURATION_CHANGED, GST_MESSAGE_EOS, GST_MESSAGE_ERROR, GST_MESSAGE_STATE_CHANGED,
 };
 
-use crate::utils::{
-    cstring_converter::{cstring_ptr_to_str, str_to_cstring},
-    pointer::{PointerConst, PointerMut},
-};
+use crate::utils::cstring_converter::{cstring_ptr_to_str, str_to_cstring};
 
 use super::gstreamer_pipeline::{GstState, GST_STATE_NULL};
 
@@ -20,45 +17,46 @@ pub(crate) enum MsgType {
     DurationChanged,
     StateChanged,
     Application,
-    Unsupported,
+    Unsupported(u32),
 }
 
-pub(crate) trait GstreamerMessage: Debug + DynClone + Send + Sync {
+pub(crate) trait GstreamerMessage: Debug + Send + Sync {
     fn msg_type(&self) -> MsgType;
     fn parse_state_changed(&self);
     fn name(&self) -> &str;
     fn read(&self, name: &str) -> &str;
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct ImplGstreamerMessage {
-    gst_message: PointerMut<GstMessage>,
-    gst_structure: PointerConst<GstStructure>,
+    gst_message: *mut GstMessage,
+    gst_structure: *const GstStructure,
 }
-
-dyn_clone::clone_trait_object!(GstreamerMessage);
 
 impl ImplGstreamerMessage {
     pub(crate) fn new(
-        gst_message: PointerMut<GstMessage>,
-        gst_structure: PointerConst<GstStructure>,
-    ) -> Box<dyn GstreamerMessage> {
-        Box::new(Self {
+        gst_message: *mut GstMessage,
+        gst_structure: *const GstStructure,
+    ) -> ImplGstreamerMessage {
+        Self {
             gst_message,
             gst_structure,
-        })
+        }
     }
 }
 
+unsafe impl Send for ImplGstreamerMessage {}
+unsafe impl Sync for ImplGstreamerMessage {}
+
 impl GstreamerMessage for ImplGstreamerMessage {
     fn msg_type(&self) -> MsgType {
-        match unsafe { self.gst_message.get().read() }.type_ {
+        match unsafe { self.gst_message.read() }.type_ {
             GST_MESSAGE_ERROR => MsgType::Error,
             GST_MESSAGE_EOS => MsgType::Eos,
             GST_MESSAGE_DURATION_CHANGED => MsgType::DurationChanged,
             GST_MESSAGE_STATE_CHANGED => MsgType::StateChanged,
             GST_MESSAGE_APPLICATION => MsgType::Application,
-            _ => MsgType::Unsupported,
+            gst_message_type => MsgType::Unsupported(gst_message_type),
         }
     }
 
@@ -68,7 +66,7 @@ impl GstreamerMessage for ImplGstreamerMessage {
         let mut pending_state: GstState = GST_STATE_NULL;
         unsafe {
             gst_message_parse_state_changed(
-                self.gst_message.get(),
+                self.gst_message,
                 &mut old_state,
                 &mut new_state,
                 &mut pending_state,
@@ -77,15 +75,15 @@ impl GstreamerMessage for ImplGstreamerMessage {
     }
 
     fn name(&self) -> &str {
-        let name_ptr = unsafe { gst_structure_get_name(self.gst_structure.get()) };
+        let name_ptr = unsafe { gst_structure_get_name(self.gst_structure) };
+
         unsafe { cstring_ptr_to_str(name_ptr) }
     }
 
     fn read(&self, name: &str) -> &str {
         unsafe {
             let name_cstring = str_to_cstring(name);
-            let value_ptr =
-                gst_structure_get_string(self.gst_structure.get(), name_cstring.as_ptr());
+            let value_ptr = gst_structure_get_string(self.gst_structure, name_cstring.as_ptr());
             cstring_ptr_to_str(value_ptr)
         }
     }
@@ -93,7 +91,151 @@ impl GstreamerMessage for ImplGstreamerMessage {
 
 impl Drop for ImplGstreamerMessage {
     fn drop(&mut self) {
-        println!("Drop message!");
-        unsafe { gst_message_unref(self.gst_message.get()) };
+        unsafe { gst_message_unref(self.gst_message) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ptr::{null, null_mut};
+
+    use gstreamer::glib::gobject_ffi::G_TYPE_STRING;
+    use gstreamer_sys::{
+        gst_message_new_application, gst_structure_new, gst_structure_new_empty, GstMessage,
+    };
+
+    use crate::{
+        gstreamer::{
+            gstreamer_message::{GstreamerMessage, ImplGstreamerMessage, MsgType},
+            gstreamer_pipeline::{GstState, GST_STATE_NULL},
+            tests_common::{self, LOCK},
+        },
+        utils::cstring_converter::str_to_cstring,
+    };
+
+    static mut MESSAGE: *mut GstMessage = null_mut();
+    static mut OLD_STATE: GstState = 0;
+    static mut NEW_STATE: GstState = 0;
+    static mut PENDING: GstState = 0;
+    static mut MESSAGE_UNREF_CALL_NB: u32 = 0;
+
+    #[no_mangle]
+    extern "C" fn gst_message_parse_state_changed(
+        message: *mut GstMessage,
+        old_state: *mut GstState,
+        new_state: *mut GstState,
+        pending: *mut GstState,
+    ) {
+        unsafe {
+            MESSAGE = message;
+            OLD_STATE = *old_state;
+            NEW_STATE = *new_state;
+            PENDING = *pending;
+        }
+    }
+
+    fn before_each() {
+        tests_common::before_each();
+
+        unsafe {
+            MESSAGE = null_mut();
+            OLD_STATE = GST_STATE_NULL;
+            NEW_STATE = GST_STATE_NULL;
+            PENDING = GST_STATE_NULL;
+            MESSAGE_UNREF_CALL_NB = 0;
+        }
+    }
+
+    #[no_mangle]
+    extern "C" fn gst_message_unref(_msg: *mut GstMessage) {
+        unsafe { MESSAGE_UNREF_CALL_NB += 1 };
+    }
+
+    #[test]
+    fn test_msg_type_application() {
+        before_each();
+
+        let _lock = LOCK.lock().unwrap();
+        let structure_name = str_to_cstring("structure_name");
+        let structure = unsafe { gst_structure_new_empty(structure_name.as_ptr()) };
+        let msg = unsafe { gst_message_new_application(null_mut(), structure) };
+        let gstreamer_message = ImplGstreamerMessage::new(msg, structure);
+
+        let msg_type = gstreamer_message.msg_type();
+
+        assert!(matches!(msg_type, MsgType::Application));
+    }
+
+    #[test]
+    fn test_parse_state_changed() {
+        before_each();
+
+        let _lock = LOCK.lock().unwrap();
+        let structure_name = str_to_cstring("structure_name");
+        let structure = unsafe { gst_structure_new_empty(structure_name.as_ptr()) };
+        let msg = unsafe { gst_message_new_application(null_mut(), structure) };
+        let gstreamer_message = ImplGstreamerMessage::new(msg, structure);
+
+        gstreamer_message.parse_state_changed();
+
+        unsafe {
+            assert_eq!(MESSAGE, msg);
+            assert_eq!(OLD_STATE, GST_STATE_NULL);
+            assert_eq!(NEW_STATE, GST_STATE_NULL);
+            assert_eq!(PENDING, GST_STATE_NULL);
+        }
+    }
+
+    #[test]
+    fn test_name() {
+        before_each();
+
+        let _lock = LOCK.lock().unwrap();
+        let structure_name = str_to_cstring("structure_name");
+        let structure = unsafe { gst_structure_new_empty(structure_name.as_ptr()) };
+        let msg = unsafe { gst_message_new_application(null_mut(), structure) };
+        let gstreamer_message = ImplGstreamerMessage::new(msg, structure);
+
+        let name = gstreamer_message.name();
+
+        assert_eq!(name, "structure_name");
+    }
+
+    #[test]
+    fn test_read() {
+        before_each();
+
+        let _lock = LOCK.lock().unwrap();
+        let structure_name = str_to_cstring("structure_name");
+        let key = str_to_cstring("key");
+        let value = str_to_cstring("value");
+        let structure = unsafe {
+            gst_structure_new(
+                structure_name.as_ptr(),
+                key.as_ptr(),
+                G_TYPE_STRING,
+                value.as_ptr(),
+                null() as *const i8,
+            )
+        };
+        let msg = unsafe { gst_message_new_application(null_mut(), structure) };
+        let gstreamer_message = ImplGstreamerMessage::new(msg, structure);
+
+        let value = gstreamer_message.read("key");
+
+        assert_eq!(value, "value");
+    }
+
+    #[test]
+    fn test_drop() {
+        before_each();
+
+        let _lock = LOCK.lock().unwrap();
+
+        {
+            let _gstreamer_message = ImplGstreamerMessage::new(null_mut(), null());
+        }
+
+        assert_eq!(unsafe { MESSAGE_UNREF_CALL_NB }, 1);
     }
 }

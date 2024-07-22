@@ -1,6 +1,4 @@
-use std::fmt::Debug;
-
-use dyn_clone::DynClone;
+use std::{fmt::Debug, sync::Arc};
 
 use crate::tauri::tauri_app_handle::TauriAppHandle;
 
@@ -11,20 +9,18 @@ pub(crate) enum Message {
     None,
 }
 
-pub(crate) trait FrontendPipe: Debug + DynClone + Send + Sync {
+pub(crate) trait FrontendPipe: Debug + Send + Sync {
     fn send(&self, message: Message);
 }
 
-dyn_clone::clone_trait_object!(FrontendPipe);
-
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct ImplFrontendPipe {
-    tauri_app_handle: Box<dyn TauriAppHandle>,
+    tauri_app_handle: Arc<dyn TauriAppHandle>,
 }
 
 impl ImplFrontendPipe {
-    pub(crate) fn new(tauri_app_handle: Box<dyn TauriAppHandle>) -> Box<dyn FrontendPipe> {
-        Box::new(Self { tauri_app_handle })
+    pub(crate) fn new(tauri_app_handle: Arc<dyn TauriAppHandle>) -> ImplFrontendPipe {
+        Self { tauri_app_handle }
     }
 }
 

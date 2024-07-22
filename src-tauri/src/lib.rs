@@ -5,7 +5,7 @@ use frontend::frontend_pipe::ImplFrontendPipe;
 use gstreamer::gstreamer::ImplGstreamer;
 use player::{
     player::{ImplPlayer, Player},
-    streamer::{self, ImplStreamer, Status},
+    streamer::{self, ImplStreamer, Status, Streamer},
     streamer_loop::ImplStreamerLoop,
     streamer_pipe::ImplStreamerPipe,
 };
@@ -19,7 +19,7 @@ mod utils;
 
 pub(crate) const MAIN_WINDOW_LABEL: &str = "main";
 
-const PLAYER: OnceLock<Box<dyn Player>> = OnceLock::new();
+const PLAYER: OnceLock<Arc<dyn Player>> = OnceLock::new();
 
 #[::tauri::command]
 fn play(uri: &str) {
@@ -42,7 +42,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             let app_handle = app.app_handle().clone();
-            let tauri_app_handle = ImplTauriAppHandle::new(app_handle);
+            let tauri_app_handle = Arc::new(ImplTauriAppHandle::new(app_handle));
             setup(tauri_app_handle);
             Ok(())
         })
@@ -61,28 +61,26 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-pub fn setup(tauri_app_handle: Box<dyn TauriAppHandle>) {
+pub fn setup(tauri_app_handle: Arc<dyn TauriAppHandle>) {
     let (sender, receiver) = channel::<Status>();
     let status = Arc::new(Mutex::new(streamer::Status::None));
     let streamer_thread_lock = Arc::new(Mutex::new(()));
 
-    let gstreamer = ImplGstreamer::new();
-    let streamer_pipe = ImplStreamerPipe::new(gstreamer.clone());
-    let frontend_pipe = ImplFrontendPipe::new(tauri_app_handle.clone());
-    let streamer_loop = ImplStreamerLoop::new(
+    let gstreamer = Arc::new(ImplGstreamer::default());
+    let streamer_pipe = Arc::new(ImplStreamerPipe::new(gstreamer.clone()));
+    let frontend_pipe = Arc::new(ImplFrontendPipe::new(tauri_app_handle.clone()));
+    let streamer_loop = Arc::new(ImplStreamerLoop::new(
         frontend_pipe.clone(),
         gstreamer.clone(),
         Arc::clone(&status),
-        Arc::clone(&streamer_thread_lock),
-    );
-    let streamer = ImplStreamer::new(
+    ));
+    let streamer = Arc::new(ImplStreamer::new(
         streamer_pipe.clone(),
         streamer_loop.clone(),
         Arc::clone(&status),
         sender,
-        Arc::clone(&streamer_thread_lock),
-    );
-    let player = ImplPlayer::new(streamer.clone(), streamer_pipe.clone());
+    ));
+    let player = Arc::new(ImplPlayer::new(streamer.clone(), streamer_pipe.clone()));
 
     PLAYER.set(player.clone()).unwrap();
     streamer.start_thread(receiver);

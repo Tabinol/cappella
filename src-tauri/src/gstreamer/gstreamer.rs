@@ -5,7 +5,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use dyn_clone::DynClone;
 use gstreamer::glib::gobject_ffi::G_TYPE_STRING;
 use gstreamer_sys::{
     gst_bus_post, gst_bus_timed_pop_filtered, gst_element_get_bus, gst_element_set_state, gst_init,
@@ -15,10 +14,7 @@ use gstreamer_sys::{
     GST_STATE_CHANGE_FAILURE, GST_STATE_PLAYING,
 };
 
-use crate::utils::{
-    cstring_converter::{str_to_cstring, string_to_cstring},
-    pointer::{PointerConst, PointerMut},
-};
+use crate::utils::cstring_converter::{str_to_cstring, string_to_cstring};
 
 use super::{
     gstreamer_message::{GstreamerMessage, ImplGstreamerMessage},
@@ -29,27 +25,28 @@ pub(crate) const GST_CLOCK_TIME_NONE: i64 = gstreamer_sys::GST_CLOCK_TIME_NONE a
 
 const UPDATE_POSITION_MILLISECONDS: i64 = 100;
 
-pub(crate) trait Gstreamer: Debug + DynClone + Send + Sync {
+pub(crate) trait Gstreamer: Debug + Send + Sync {
     fn init(&self);
     fn launch(&self, uri: &str) -> Box<dyn GstreamerPipeline>;
     fn bus_timed_pop_filtered(&self) -> Option<Box<dyn GstreamerMessage>>;
     fn send_to_gst(&self, name: &str, key: &str, value: &str);
 }
 
-dyn_clone::clone_trait_object!(Gstreamer);
-
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct ImplGstreamer {
-    bus: Arc<Mutex<PointerMut<GstBus>>>,
+    bus: Arc<Mutex<*mut GstBus>>,
 }
 
-impl ImplGstreamer {
-    pub(crate) fn new() -> Box<dyn Gstreamer> {
-        Box::new(Self {
-            bus: Arc::new(Mutex::new(PointerMut::new(null_mut()))),
-        })
+impl Default for ImplGstreamer {
+    fn default() -> Self {
+        Self {
+            bus: Arc::new(Mutex::new(null_mut())),
+        }
     }
 }
+
+unsafe impl Send for ImplGstreamer {}
+unsafe impl Sync for ImplGstreamer {}
 
 impl Gstreamer for ImplGstreamer {
     fn init(&self) {
@@ -68,12 +65,9 @@ impl Gstreamer for ImplGstreamer {
     fn launch(&self, uri: &str) -> Box<dyn GstreamerPipeline> {
         let pipeline_description = string_to_cstring(format!("playbin uri=\"{uri}\""));
 
-        let pipeline = PointerMut::new(unsafe {
+        let pipeline = unsafe {
             let pipeline = gst_parse_launch(pipeline_description.as_ptr(), null_mut());
-            self.bus
-                .lock()
-                .unwrap()
-                .replace(gst_element_get_bus(pipeline));
+            *self.bus.lock().unwrap() = gst_element_get_bus(pipeline);
 
             if gst_element_set_state(pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE {
                 gst_object_unref(pipeline as *mut GstObject);
@@ -81,15 +75,15 @@ impl Gstreamer for ImplGstreamer {
             }
 
             pipeline
-        });
+        };
 
-        ImplGstreamerPipeline::new(pipeline, Arc::clone(&self.bus))
+        Box::new(ImplGstreamerPipeline::new(pipeline, self.bus.clone()))
     }
 
     fn bus_timed_pop_filtered(&self) -> Option<Box<dyn GstreamerMessage>> {
-        let msg = PointerMut::new(unsafe {
+        let msg = unsafe {
             gst_bus_timed_pop_filtered(
-                self.bus.lock().unwrap().get(),
+                *self.bus.lock().unwrap(),
                 (UPDATE_POSITION_MILLISECONDS * GST_MSECOND) as u64,
                 GST_MESSAGE_STATE_CHANGED
                     | GST_MESSAGE_ERROR
@@ -97,11 +91,11 @@ impl Gstreamer for ImplGstreamer {
                     | GST_MESSAGE_DURATION_CHANGED
                     | GST_MESSAGE_APPLICATION,
             )
-        });
+        };
 
-        if !msg.get().is_null() {
-            let structure = PointerConst::new(unsafe { gst_message_get_structure(msg.get()) });
-            return Some(ImplGstreamerMessage::new(msg, structure));
+        if !msg.is_null() {
+            let structure = unsafe { gst_message_get_structure(msg) };
+            return Some(Box::new(ImplGstreamerMessage::new(msg, structure)));
         }
 
         None
@@ -111,7 +105,7 @@ impl Gstreamer for ImplGstreamer {
         let bus = self.bus.lock().unwrap();
 
         #[cfg(not(test))]
-        if bus.get().is_null() {
+        if bus.is_null() {
             eprintln!("Unable to send the message to streamer.");
             return;
         }
@@ -133,7 +127,101 @@ impl Gstreamer for ImplGstreamer {
 
         unsafe {
             let gst_msg = gst_message_new_application(null_mut(), structure);
-            gst_bus_post(bus.get(), gst_msg);
+            gst_bus_post(*bus, gst_msg);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        ffi::{c_char, c_int},
+        ptr::null_mut,
+    };
+
+    use gstreamer::glib::ffi::GError;
+    use gstreamer_sys::{GstBus, GstElement, GST_STATE_CHANGE_FAILURE};
+
+    use crate::gstreamer::{
+        gstreamer::Gstreamer,
+        tests_common::{self, ELEMENT_SET_STATE_RESULT, LOCK, OBJECT_UNREF_CALL_NB},
+    };
+
+    use super::ImplGstreamer;
+
+    static mut INIT_CALL_NB: u32 = 0;
+    static mut PARSE_LAUNCH_CALL_NB: u32 = 0;
+    static mut ELEMENT_GET_BUS_CALL_NB: u32 = 0;
+
+    #[no_mangle]
+    extern "C" fn gst_init(_argc: *mut c_int, _argv: *mut *mut *mut c_char) {
+        unsafe { INIT_CALL_NB += 1 };
+    }
+
+    #[no_mangle]
+    extern "C" fn gst_parse_launch(
+        _pipeline_description: *const c_char,
+        _error: *mut *mut GError,
+    ) -> *mut GstElement {
+        unsafe { PARSE_LAUNCH_CALL_NB += 1 };
+        null_mut()
+    }
+
+    #[no_mangle]
+    extern "C" fn gst_element_get_bus(_element: *mut GstElement) -> *mut GstBus {
+        unsafe { ELEMENT_GET_BUS_CALL_NB += 1 };
+        null_mut()
+    }
+
+    fn before_each() {
+        tests_common::before_each();
+
+        unsafe {
+            INIT_CALL_NB = 0;
+            PARSE_LAUNCH_CALL_NB = 0;
+            ELEMENT_GET_BUS_CALL_NB = 0;
+        }
+    }
+
+    #[test]
+    fn test_init() {
+        before_each();
+
+        let _lock = LOCK.lock().unwrap();
+        let gstreamer = ImplGstreamer::default();
+
+        gstreamer.init();
+
+        assert_eq!(unsafe { INIT_CALL_NB }, 1);
+    }
+
+    #[test]
+    fn test_launch() {
+        before_each();
+
+        let _lock = LOCK.lock().unwrap();
+        let gstreamer = ImplGstreamer::default();
+
+        gstreamer.launch("uri");
+
+        assert_eq!(unsafe { PARSE_LAUNCH_CALL_NB }, 1);
+        assert_eq!(unsafe { ELEMENT_GET_BUS_CALL_NB }, 1);
+        assert_eq!(unsafe { OBJECT_UNREF_CALL_NB }, 2);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_launch_failure() {
+        before_each();
+
+        let _lock = LOCK.lock().unwrap();
+        let gstreamer = ImplGstreamer::default();
+
+        unsafe { ELEMENT_SET_STATE_RESULT = GST_STATE_CHANGE_FAILURE }
+        gstreamer.launch("uri");
+
+        assert_eq!(unsafe { PARSE_LAUNCH_CALL_NB }, 1);
+        assert_eq!(unsafe { ELEMENT_GET_BUS_CALL_NB }, 1);
+        assert_eq!(unsafe { OBJECT_UNREF_CALL_NB }, 1);
     }
 }

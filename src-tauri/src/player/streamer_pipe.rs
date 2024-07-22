@@ -1,14 +1,13 @@
-use std::fmt::Debug;
-
-use dyn_clone::DynClone;
+use std::{fmt::Debug, sync::Arc};
 
 use crate::gstreamer::gstreamer::Gstreamer;
 
 pub(crate) const MESSAGE_NAME: &str = "APP_MSG";
 pub(crate) const MESSAGE_FIELD_JSON: &str = "JSON";
 
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 pub(crate) enum Message {
+    #[default]
     None,
     Pause,
     Next(String),
@@ -16,20 +15,17 @@ pub(crate) enum Message {
     End,
 }
 
-pub(crate) trait StreamerPipe: Debug + DynClone + Send + Sync {
+pub(crate) trait StreamerPipe: Debug + Send + Sync {
     fn send(&self, message: Message);
 }
-
-dyn_clone::clone_trait_object!(StreamerPipe);
-
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct ImplStreamerPipe {
-    gstreamer: Box<dyn Gstreamer>,
+    gstreamer: Arc<dyn Gstreamer>,
 }
 
 impl ImplStreamerPipe {
-    pub(crate) fn new(gstreamer: Box<dyn Gstreamer>) -> Box<dyn StreamerPipe> {
-        Box::new(Self { gstreamer })
+    pub(crate) fn new(gstreamer: Arc<dyn Gstreamer>) -> ImplStreamerPipe {
+        Self { gstreamer }
     }
 }
 
@@ -51,11 +47,11 @@ mod tests {
             gstreamer_pipeline::GstreamerPipeline,
         },
         player::streamer_pipe::{
-            self, ImplStreamerPipe, Message, MESSAGE_FIELD_JSON, MESSAGE_NAME,
+            self, ImplStreamerPipe, Message, StreamerPipe, MESSAGE_FIELD_JSON, MESSAGE_NAME,
         },
     };
 
-    #[derive(Clone, Debug, Default)]
+    #[derive(Debug, Default)]
     struct MockGstreamer {
         name: Arc<Mutex<String>>,
         key: Arc<Mutex<String>>,
@@ -82,7 +78,7 @@ mod tests {
 
     #[test]
     fn test_send_pause() {
-        let gstreamer = Box::new(MockGstreamer::default());
+        let gstreamer = Arc::new(MockGstreamer::default());
         let streamer_pipe = ImplStreamerPipe::new(gstreamer.clone());
 
         streamer_pipe.send(streamer_pipe::Message::Pause);
@@ -95,7 +91,7 @@ mod tests {
 
     #[test]
     fn test_send_next() {
-        let gstreamer = Box::new(MockGstreamer::default());
+        let gstreamer = Arc::new(MockGstreamer::default());
         let streamer_pipe = ImplStreamerPipe::new(gstreamer.clone());
 
         streamer_pipe.send(streamer_pipe::Message::Next("new_uri".to_string()));
@@ -116,7 +112,7 @@ mod tests {
 
     #[test]
     fn test_send_stop() {
-        let gstreamer = Box::new(MockGstreamer::default());
+        let gstreamer = Arc::new(MockGstreamer::default());
         let streamer_pipe = ImplStreamerPipe::new(gstreamer.clone());
 
         streamer_pipe.send(streamer_pipe::Message::Stop);
@@ -129,7 +125,7 @@ mod tests {
 
     #[test]
     fn test_send_end() {
-        let gstreamer = Box::new(MockGstreamer::default());
+        let gstreamer = Arc::new(MockGstreamer::default());
         let streamer_pipe = ImplStreamerPipe::new(gstreamer.clone());
 
         streamer_pipe.send(streamer_pipe::Message::End);

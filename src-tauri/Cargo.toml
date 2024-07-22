@@ -15,7 +15,6 @@ crate-type = ["lib", "cdylib", "staticlib"]
 tauri-build = { version = "2.0.0-beta.18", features = [] }
 
 [dependencies]
-dyn-clone = "1.0.17"
 gstreamer = "0.22.3"
 gstreamer-sys = { version = "0.22.2", features = ["v1_18_3"] }
 serde = { version = "1", features = ["derive"] }

@@ -1,36 +1,32 @@
-use std::fmt::Debug;
-
-use dyn_clone::DynClone;
+use std::{fmt::Debug, sync::Arc};
 
 use super::{
     streamer::Streamer,
     streamer_pipe::{Message, StreamerPipe},
 };
 
-pub(crate) trait Player: Debug + DynClone + Send + Sync {
+pub(crate) trait Player: Debug + Send + Sync {
     fn play(&self, uri: &str);
     fn pause(&self);
     fn stop(&self);
     fn end(&self);
 }
 
-dyn_clone::clone_trait_object!(Player);
-
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct ImplPlayer {
-    streamer: Box<dyn Streamer>,
-    streamer_pipe: Box<dyn StreamerPipe>,
+    streamer: Arc<dyn Streamer>,
+    streamer_pipe: Arc<dyn StreamerPipe>,
 }
 
 impl ImplPlayer {
     pub(crate) fn new(
-        streamer: Box<dyn Streamer>,
-        streamer_pipe: Box<dyn StreamerPipe>,
-    ) -> Box<dyn Player> {
-        Box::new(Self {
+        streamer: Arc<dyn Streamer>,
+        streamer_pipe: Arc<dyn StreamerPipe>,
+    ) -> ImplPlayer {
+        Self {
             streamer,
             streamer_pipe,
-        })
+        }
     }
 }
 
@@ -66,12 +62,12 @@ mod tests {
     use std::sync::{mpsc::Receiver, Arc, Mutex};
 
     use crate::player::{
-        player::ImplPlayer,
+        player::{ImplPlayer, Player},
         streamer::{Status, Streamer},
         streamer_pipe::{Message, StreamerPipe},
     };
 
-    #[derive(Clone, Debug)]
+    #[derive(Debug)]
     struct MockStreamer {
         is_running: bool,
         uri: Arc<Mutex<String>>,
@@ -91,7 +87,7 @@ mod tests {
         fn end(&self) {}
     }
 
-    #[derive(Clone, Debug)]
+    #[derive(Debug)]
     struct MockStreamerPipe {
         message: Arc<Mutex<Message>>,
     }
@@ -104,11 +100,11 @@ mod tests {
 
     #[test]
     fn test_play_when_streamer_inactive() {
-        let streamer = Box::new(MockStreamer {
+        let streamer = Arc::new(MockStreamer {
             is_running: false,
             uri: Arc::new(Mutex::new(String::new())),
         });
-        let streamer_pipe = Box::new(MockStreamerPipe {
+        let streamer_pipe = Arc::new(MockStreamerPipe {
             message: Arc::new(Mutex::new(Message::None)),
         });
 
@@ -121,11 +117,11 @@ mod tests {
 
     #[test]
     fn test_play_when_streamer_active() {
-        let streamer = Box::new(MockStreamer {
+        let streamer = Arc::new(MockStreamer {
             is_running: true,
             uri: Arc::new(Mutex::new(String::new())),
         });
-        let streamer_pipe = Box::new(MockStreamerPipe {
+        let streamer_pipe = Arc::new(MockStreamerPipe {
             message: Arc::new(Mutex::new(Message::None)),
         });
 
@@ -144,11 +140,11 @@ mod tests {
 
     #[test]
     fn test_pause() {
-        let streamer = Box::new(MockStreamer {
+        let streamer = Arc::new(MockStreamer {
             is_running: true,
             uri: Arc::new(Mutex::new(String::new())),
         });
-        let streamer_pipe = Box::new(MockStreamerPipe {
+        let streamer_pipe = Arc::new(MockStreamerPipe {
             message: Arc::new(Mutex::new(Message::None)),
         });
 
@@ -162,11 +158,11 @@ mod tests {
 
     #[test]
     fn test_stop() {
-        let streamer = Box::new(MockStreamer {
+        let streamer = Arc::new(MockStreamer {
             is_running: true,
             uri: Arc::new(Mutex::new(String::new())),
         });
-        let streamer_pipe = Box::new(MockStreamerPipe {
+        let streamer_pipe = Arc::new(MockStreamerPipe {
             message: Arc::new(Mutex::new(Message::None)),
         });
 

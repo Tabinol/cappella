@@ -243,7 +243,6 @@ dependencies = [
 name = "cappella"
 version = "0.0.0"
 dependencies = [
- "dyn-clone",
  "gstreamer",
  "gstreamer-sys",
  "serde",

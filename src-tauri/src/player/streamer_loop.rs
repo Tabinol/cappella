@@ -3,8 +3,6 @@ use std::{
     sync::{mpsc::Receiver, Arc, Mutex},
 };
 
-use dyn_clone::DynClone;
-
 use crate::{
     frontend::frontend_pipe::FrontendPipe,
     gstreamer::{
@@ -19,11 +17,9 @@ use super::{
     streamer_pipe::{Message, MESSAGE_FIELD_JSON, MESSAGE_NAME},
 };
 
-pub(crate) trait StreamerLoop: Debug + DynClone + Send + Sync {
+pub(crate) trait StreamerLoop: Debug + Send + Sync {
     fn run(&self, receiver: Receiver<Status>);
 }
-
-dyn_clone::clone_trait_object!(StreamerLoop);
 
 #[derive(Clone, Debug)]
 struct Data {
@@ -32,35 +28,31 @@ struct Data {
     duration: i64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct ImplStreamerLoop {
-    frontend_pipe: Box<dyn FrontendPipe>,
-    gstreamer: Box<dyn Gstreamer>,
+    frontend_pipe: Arc<dyn FrontendPipe>,
+    gstreamer: Arc<dyn Gstreamer>,
     status: Arc<Mutex<Status>>,
-    streamer_thread_lock: Arc<Mutex<()>>,
 }
 
 impl ImplStreamerLoop {
     pub(crate) fn new(
-        frontend_pipe: Box<dyn FrontendPipe>,
-        gstreamer: Box<dyn Gstreamer>,
+        frontend_pipe: Arc<dyn FrontendPipe>,
+        gstreamer: Arc<dyn Gstreamer>,
         status: Arc<Mutex<Status>>,
-        streamer_thread_lock: Arc<Mutex<()>>,
-    ) -> Box<dyn StreamerLoop> {
-        Box::new(Self {
+    ) -> ImplStreamerLoop {
+        Self {
             frontend_pipe,
             gstreamer,
             status,
-            streamer_thread_lock,
-        })
+        }
     }
 
     fn gst_thread(&self, receiver: Receiver<Status>) {
-        let _streamer_thread_lock = self.streamer_thread_lock.lock().unwrap();
         *self.status.lock().unwrap() = Status::Wait;
 
         'end_gst_thread: loop {
-            let status_clone = Arc::clone(&self.status);
+            let status_clone = self.status.clone();
             let mut current_status = status_clone.lock().unwrap().clone();
 
             if matches!(current_status, Status::Wait) {
@@ -101,7 +93,7 @@ impl ImplStreamerLoop {
         'end_gst: loop {
             let msg_opt = self.gstreamer.bus_timed_pop_filtered();
 
-            let status_clone = Arc::clone(&self.status);
+            let status_clone = self.status.clone();
             let mut status_lock = status_clone.lock().unwrap();
 
             if let Some(msg) = msg_opt {
@@ -147,8 +139,8 @@ impl ImplStreamerLoop {
                 None
             }
             MsgType::Application => self.handle_application_message(data, pipeline, msg),
-            _ => {
-                eprintln!("Unexpected message received");
+            MsgType::Unsupported(gst_message_type) => {
+                eprintln!("Unexpected message number received: {gst_message_type}");
                 None
             }
         }

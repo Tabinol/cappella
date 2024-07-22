@@ -1,11 +1,8 @@
 use std::fmt::Debug;
 
-use dyn_clone::DynClone;
 use tauri::AppHandle;
 
-pub trait TauriAppHandle: Debug + DynClone + Send + Sync {}
-
-dyn_clone::clone_trait_object!(TauriAppHandle);
+pub trait TauriAppHandle: Debug + Send + Sync {}
 
 #[derive(Clone, Debug)]
 pub(crate) struct ImplTauriAppHandle {
@@ -13,8 +10,8 @@ pub(crate) struct ImplTauriAppHandle {
 }
 
 impl ImplTauriAppHandle {
-    pub(crate) fn new(app_handle: AppHandle) -> Box<dyn TauriAppHandle> {
-        Box::new(Self { app_handle })
+    pub(crate) fn new(app_handle: AppHandle) -> ImplTauriAppHandle {
+        Self { app_handle }
     }
 }
 
