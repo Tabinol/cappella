@@ -188,11 +188,6 @@ impl ImplStreamerLoop {
                 println!("Stop request (Async) and new uri '{uri}'.");
                 Some(Status::PlayNext(uri))
             }
-            Message::End => {
-                // TODO remove?
-                println!("End request.");
-                Some(Status::End)
-            }
         }
     }
 

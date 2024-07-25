@@ -9,9 +9,9 @@ use gstreamer::glib::gobject_ffi::G_TYPE_STRING;
 use gstreamer_sys::{
     gst_bus_post, gst_bus_timed_pop_filtered, gst_element_get_bus, gst_element_set_state, gst_init,
     gst_message_get_structure, gst_message_new_application, gst_object_unref, gst_parse_launch,
-    gst_structure_new, GstBus, GstObject, GST_MESSAGE_APPLICATION, GST_MESSAGE_DURATION_CHANGED,
-    GST_MESSAGE_EOS, GST_MESSAGE_ERROR, GST_MESSAGE_STATE_CHANGED, GST_MSECOND,
-    GST_STATE_CHANGE_FAILURE, GST_STATE_PLAYING,
+    gst_structure_new, GstBus, GstObject, GstStructure, GST_MESSAGE_APPLICATION,
+    GST_MESSAGE_DURATION_CHANGED, GST_MESSAGE_EOS, GST_MESSAGE_ERROR, GST_MESSAGE_STATE_CHANGED,
+    GST_MSECOND, GST_STATE_CHANGE_FAILURE, GST_STATE_PLAYING,
 };
 
 use crate::utils::cstring_converter::{str_to_cstring, string_to_cstring};
@@ -67,7 +67,13 @@ impl Gstreamer for ImplGstreamer {
 
         let pipeline = unsafe {
             let pipeline = gst_parse_launch(pipeline_description.as_ptr(), null_mut());
-            *self.bus.lock().unwrap() = gst_element_get_bus(pipeline);
+            let mut bus = self.bus.lock().unwrap();
+
+            if !bus.is_null() {
+                panic!("The gst bus is already assigned.")
+            }
+
+            *bus = gst_element_get_bus(pipeline);
 
             if gst_element_set_state(pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE {
                 gst_object_unref(pipeline as *mut GstObject);
@@ -82,8 +88,14 @@ impl Gstreamer for ImplGstreamer {
 
     fn bus_timed_pop_filtered(&self) -> Option<Box<dyn GstreamerMessage>> {
         let msg = unsafe {
+            let bus = self.bus.lock().unwrap();
+
+            if bus.is_null() {
+                panic!("The gst bus is null.");
+            }
+
             gst_bus_timed_pop_filtered(
-                *self.bus.lock().unwrap(),
+                *bus,
                 (UPDATE_POSITION_MILLISECONDS * GST_MSECOND) as u64,
                 GST_MESSAGE_STATE_CHANGED
                     | GST_MESSAGE_ERROR
@@ -94,7 +106,7 @@ impl Gstreamer for ImplGstreamer {
         };
 
         if !msg.is_null() {
-            let structure = unsafe { gst_message_get_structure(msg) };
+            let structure = unsafe { gst_message_get_structure(msg) as *mut GstStructure };
             return Some(Box::new(ImplGstreamerMessage::new(msg, structure)));
         }
 
@@ -104,9 +116,8 @@ impl Gstreamer for ImplGstreamer {
     fn send_to_gst(&self, name: &str, key: &str, value: &str) {
         let bus = self.bus.lock().unwrap();
 
-        #[cfg(not(test))]
         if bus.is_null() {
-            eprintln!("Unable to send the message to streamer.");
+            eprintln!("Unable to send the message to streamer because the gst bus is null.");
             return;
         }
 
@@ -134,17 +145,17 @@ impl Gstreamer for ImplGstreamer {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        ffi::{c_char, c_int},
-        ptr::null_mut,
-    };
+    use std::ffi::{c_char, c_int};
 
     use gstreamer::glib::ffi::GError;
     use gstreamer_sys::{GstBus, GstElement, GST_STATE_CHANGE_FAILURE};
 
     use crate::gstreamer::{
         gstreamer::Gstreamer,
-        tests_common::{self, ELEMENT_SET_STATE_RESULT, LOCK, OBJECT_UNREF_CALL_NB},
+        tests_common::{
+            self, get_gst_bus_ptr, get_gst_element_ptr, ELEMENT_SET_STATE_RESULT, LOCK,
+            OBJECT_UNREF_CALL_NB,
+        },
     };
 
     use super::ImplGstreamer;
@@ -163,14 +174,20 @@ mod tests {
         _pipeline_description: *const c_char,
         _error: *mut *mut GError,
     ) -> *mut GstElement {
-        unsafe { PARSE_LAUNCH_CALL_NB += 1 };
-        null_mut()
+        unsafe {
+            PARSE_LAUNCH_CALL_NB += 1;
+        }
+
+        get_gst_element_ptr()
     }
 
     #[no_mangle]
     extern "C" fn gst_element_get_bus(_element: *mut GstElement) -> *mut GstBus {
-        unsafe { ELEMENT_GET_BUS_CALL_NB += 1 };
-        null_mut()
+        unsafe {
+            ELEMENT_GET_BUS_CALL_NB += 1;
+        }
+
+        get_gst_bus_ptr()
     }
 
     fn before_each() {

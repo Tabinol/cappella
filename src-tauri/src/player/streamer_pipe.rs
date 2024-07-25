@@ -12,7 +12,6 @@ pub(crate) enum Message {
     Pause,
     Next(String),
     Stop,
-    End,
 }
 
 pub(crate) trait StreamerPipe: Debug + Send + Sync {
@@ -121,18 +120,5 @@ mod tests {
         assert_eq!(*gstreamer.key.lock().unwrap(), MESSAGE_FIELD_JSON);
         let message: Message = serde_json::from_str(&*gstreamer.value.lock().unwrap()).unwrap();
         assert!(matches!(message, Message::Stop));
-    }
-
-    #[test]
-    fn test_send_end() {
-        let gstreamer = Arc::new(MockGstreamer::default());
-        let streamer_pipe = ImplStreamerPipe::new(gstreamer.clone());
-
-        streamer_pipe.send(streamer_pipe::Message::End);
-
-        assert_eq!(*gstreamer.name.lock().unwrap(), MESSAGE_NAME);
-        assert_eq!(*gstreamer.key.lock().unwrap(), MESSAGE_FIELD_JSON);
-        let message: Message = serde_json::from_str(&*gstreamer.value.lock().unwrap()).unwrap();
-        assert!(matches!(message, Message::End));
     }
 }

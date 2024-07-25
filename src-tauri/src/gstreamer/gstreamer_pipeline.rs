@@ -1,6 +1,5 @@
 use std::{
     fmt::Debug,
-    ptr::null_mut,
     sync::{Arc, Mutex},
 };
 
@@ -75,24 +74,22 @@ impl GstreamerPipeline for ImplGstreamerPipeline {
 impl Drop for ImplGstreamerPipeline {
     fn drop(&mut self) {
         println!("Drop pipeline!");
-        let mut bus = self.bus.lock().unwrap();
+        let bus = self.bus.lock().unwrap();
 
         unsafe {
-            gst_object_unref(*bus as *mut GstObject);
+            if !bus.is_null() {
+                gst_object_unref(*bus as *mut GstObject);
+            }
+
             gst_element_set_state(self.gst_element, GST_STATE_NULL);
             gst_object_unref(self.gst_element as *mut GstObject);
         }
-
-        *bus = null_mut();
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        ptr::null_mut,
-        sync::{Arc, Mutex},
-    };
+    use std::sync::{Arc, Mutex};
 
     use gstreamer::glib::ffi::{gboolean, GTRUE};
     use gstreamer_sys::{GstElement, GstFormat};
@@ -102,7 +99,8 @@ mod tests {
             GstreamerPipeline, ImplGstreamerPipeline, GST_STATE_NULL, GST_STATE_PAUSED,
         },
         tests_common::{
-            self, ELEMENT_SET_STATE_CHANGE, ELEMENT_SET_STATE_RESULT, LOCK, OBJECT_UNREF_CALL_NB,
+            self, get_gst_bus_ptr, get_gst_element_ptr, ELEMENT_SET_STATE_CHANGE,
+            ELEMENT_SET_STATE_RESULT, LOCK, OBJECT_UNREF_CALL_NB,
         },
     };
 
@@ -135,8 +133,8 @@ mod tests {
         before_each();
 
         let _lock = LOCK.lock().unwrap();
-        let gst_element = null_mut();
-        let bus = Arc::new(Mutex::new(null_mut()));
+        let gst_element = get_gst_element_ptr();
+        let bus = Arc::new(Mutex::new(get_gst_bus_ptr()));
         let gstreamer_pipeline = ImplGstreamerPipeline::new(gst_element, bus);
 
         gstreamer_pipeline.set_state(GST_STATE_PAUSED);
@@ -149,8 +147,8 @@ mod tests {
         before_each();
 
         let _lock = LOCK.lock().unwrap();
-        let gst_element = null_mut();
-        let bus = Arc::new(Mutex::new(null_mut()));
+        let gst_element = get_gst_element_ptr();
+        let bus = Arc::new(Mutex::new(get_gst_bus_ptr()));
         let gstreamer_pipeline = ImplGstreamerPipeline::new(gst_element, bus);
 
         let position = gstreamer_pipeline.query_position();
@@ -164,8 +162,8 @@ mod tests {
         before_each();
 
         let _lock = LOCK.lock().unwrap();
-        let gst_element = null_mut();
-        let bus = Arc::new(Mutex::new(null_mut()));
+        let gst_element = get_gst_element_ptr();
+        let bus = Arc::new(Mutex::new(get_gst_bus_ptr()));
         let gstreamer_pipeline = ImplGstreamerPipeline::new(gst_element, bus);
 
         let duration = gstreamer_pipeline.query_duration();
@@ -181,8 +179,8 @@ mod tests {
         let _lock = LOCK.lock().unwrap();
 
         {
-            let gst_element = null_mut();
-            let bus = Arc::new(Mutex::new(null_mut()));
+            let gst_element = get_gst_element_ptr();
+            let bus = Arc::new(Mutex::new(get_gst_bus_ptr()));
             let _gstreamer_pipeline = ImplGstreamerPipeline::new(gst_element, bus);
         }
 

@@ -100,11 +100,10 @@ impl Streamer for ImplStreamer {
                 &*self.status.lock().unwrap(),
                 Status::Play(_) | Status::PlayNext(_)
             ) {
-                self.streamer_pipe.send(Message::End);
-            } else {
-                self.sender.send(Status::End).unwrap();
+                self.streamer_pipe.send(Message::Stop);
             }
 
+            self.sender.send(Status::End).unwrap();
             join_handle.join().unwrap();
         }
     }
@@ -268,16 +267,14 @@ mod tests {
     fn test_end_on_play() {
         let streamer_pipe = Arc::new(MockStreamerPipe::default());
         let streamer_loop = Arc::new(MockStreamerLoop::default());
-        let (_sender, receiver) = channel::<Status>();
-
-        let (fake_sender, _fake_receiver) = channel::<Status>();
+        let (sender, receiver) = channel::<Status>();
 
         *streamer_loop.status.lock().unwrap() = Status::Play("uri".to_owned());
         let streamer = ImplStreamer::new(
             streamer_pipe.clone(),
             streamer_loop.clone(),
             streamer_loop.status.clone(),
-            fake_sender,
+            sender,
         );
 
         streamer.start_thread(receiver);
@@ -289,7 +286,7 @@ mod tests {
 
         assert!(matches!(*status_lock, Status::End));
         assert!(message_lock.is_some());
-        assert!(matches!(message_lock.as_ref().unwrap(), Message::End));
+        assert!(matches!(message_lock.as_ref().unwrap(), Message::Stop));
     }
 
     #[test]

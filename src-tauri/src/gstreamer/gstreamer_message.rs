@@ -50,7 +50,9 @@ unsafe impl Sync for ImplGstreamerMessage {}
 
 impl GstreamerMessage for ImplGstreamerMessage {
     fn msg_type(&self) -> MsgType {
-        match unsafe { self.gst_message.read() }.type_ {
+        let type_ = unsafe { (*self.gst_message).type_ };
+
+        match type_ {
             GST_MESSAGE_ERROR => MsgType::Error,
             GST_MESSAGE_EOS => MsgType::Eos,
             GST_MESSAGE_DURATION_CHANGED => MsgType::DurationChanged,
@@ -91,7 +93,7 @@ impl GstreamerMessage for ImplGstreamerMessage {
 
 impl Drop for ImplGstreamerMessage {
     fn drop(&mut self) {
-        unsafe { gst_message_unref(self.gst_message) };
+        unsafe { gst_message_unref(self.gst_message as *mut GstMessage) };
     }
 }
 
@@ -231,9 +233,12 @@ mod tests {
         before_each();
 
         let _lock = LOCK.lock().unwrap();
+        let structure_name = str_to_cstring("structure_name");
+        let structure = unsafe { gst_structure_new_empty(structure_name.as_ptr()) };
+        let msg = unsafe { gst_message_new_application(null_mut(), structure) };
 
         {
-            let _gstreamer_message = ImplGstreamerMessage::new(null_mut(), null());
+            let _gstreamer_message = ImplGstreamerMessage::new(msg, structure);
         }
 
         assert_eq!(unsafe { MESSAGE_UNREF_CALL_NB }, 1);
