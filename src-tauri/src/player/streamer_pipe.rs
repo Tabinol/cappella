@@ -14,7 +14,7 @@ pub(crate) enum Message {
     Stop,
 }
 
-pub(crate) trait StreamerPipe: Debug + Send + Sync {
+pub(crate) trait StreamerPipe: Debug {
     fn send(&self, message: Message);
 }
 #[derive(Debug)]

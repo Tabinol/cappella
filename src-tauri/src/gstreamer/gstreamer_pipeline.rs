@@ -17,7 +17,7 @@ pub(crate) const GST_STATE_READY: GstState = gstreamer_sys::GST_STATE_READY;
 pub(crate) const GST_STATE_PAUSED: GstState = gstreamer_sys::GST_STATE_PAUSED;
 pub(crate) const GST_STATE_PLAYING: GstState = gstreamer_sys::GST_STATE_PLAYING;
 
-pub(crate) trait GstreamerPipeline: Debug + Send + Sync {
+pub(crate) trait GstreamerPipeline: Debug {
     fn set_state(&self, gst_state: GstState);
     fn query_position(&self) -> Option<i64>;
     fn query_duration(&self) -> Option<i64>;
@@ -37,9 +37,6 @@ impl ImplGstreamerPipeline {
         Self { gst_element, bus }
     }
 }
-
-unsafe impl Send for ImplGstreamerPipeline {}
-unsafe impl Sync for ImplGstreamerPipeline {}
 
 impl GstreamerPipeline for ImplGstreamerPipeline {
     fn set_state(&self, gst_state: GstState) {

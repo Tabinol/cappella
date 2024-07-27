@@ -25,7 +25,7 @@ pub(crate) const GST_CLOCK_TIME_NONE: i64 = gstreamer_sys::GST_CLOCK_TIME_NONE a
 
 const UPDATE_POSITION_MILLISECONDS: i64 = 100;
 
-pub(crate) trait Gstreamer: Debug + Send + Sync {
+pub(crate) trait Gstreamer: Debug {
     fn init(&self);
     fn launch(&self, uri: &str) -> Box<dyn GstreamerPipeline>;
     fn bus_timed_pop_filtered(&self) -> Option<Box<dyn GstreamerMessage>>;
@@ -44,9 +44,6 @@ impl Default for ImplGstreamer {
         }
     }
 }
-
-unsafe impl Send for ImplGstreamer {}
-unsafe impl Sync for ImplGstreamer {}
 
 impl Gstreamer for ImplGstreamer {
     fn init(&self) {

@@ -24,12 +24,13 @@ pub(crate) enum Status {
     End,
 }
 
-pub(crate) trait Streamer: Debug + Send + Sync {
+pub(crate) trait Streamer: Debug {
     fn is_running(&self) -> bool;
     fn start_thread(&self, receiver: Receiver<Status>);
     fn play(&self, uri: &str);
     fn end(&self);
 }
+
 #[derive(Debug)]
 pub(crate) struct ImplStreamer {
     streamer_pipe: Arc<dyn StreamerPipe>,

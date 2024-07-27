@@ -5,7 +5,7 @@ use super::{
     streamer_pipe::{Message, StreamerPipe},
 };
 
-pub(crate) trait Player: Debug + Send + Sync {
+pub(crate) trait Player: Debug {
     fn play(&self, uri: &str);
     fn pause(&self);
     fn stop(&self);

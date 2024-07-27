@@ -4,12 +4,13 @@ use crate::tauri::tauri_app_handle::TauriAppHandle;
 
 const PLAYER_EVENT_NAME: &str = "PLAYER_EVENT";
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 pub(crate) enum Message {
+    #[default]
     None,
 }
 
-pub(crate) trait FrontendPipe: Debug + Send + Sync {
+pub(crate) trait FrontendPipe: Debug {
     fn send(&self, message: Message);
 }
 

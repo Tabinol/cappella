@@ -10,8 +10,10 @@ use crate::utils::cstring_converter::{cstring_ptr_to_str, str_to_cstring};
 
 use super::gstreamer_pipeline::{GstState, GST_STATE_NULL};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(crate) enum MsgType {
+    #[default]
+    None,
     Error,
     Eos,
     DurationChanged,
@@ -20,7 +22,7 @@ pub(crate) enum MsgType {
     Unsupported(u32),
 }
 
-pub(crate) trait GstreamerMessage: Debug + Send + Sync {
+pub(crate) trait GstreamerMessage: Debug {
     fn msg_type(&self) -> MsgType;
     fn parse_state_changed(&self);
     fn name(&self) -> &str;
@@ -44,9 +46,6 @@ impl ImplGstreamerMessage {
         }
     }
 }
-
-unsafe impl Send for ImplGstreamerMessage {}
-unsafe impl Sync for ImplGstreamerMessage {}
 
 impl GstreamerMessage for ImplGstreamerMessage {
     fn msg_type(&self) -> MsgType {

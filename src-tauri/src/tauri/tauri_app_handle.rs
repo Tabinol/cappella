@@ -2,9 +2,9 @@ use std::fmt::Debug;
 
 use tauri::AppHandle;
 
-pub trait TauriAppHandle: Debug + Send + Sync {}
+pub trait TauriAppHandle: Debug {}
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct ImplTauriAppHandle {
     app_handle: AppHandle,
 }

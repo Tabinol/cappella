@@ -35,6 +35,9 @@ pub(crate) struct ImplStreamerLoop {
     status: Arc<Mutex<Status>>,
 }
 
+unsafe impl Send for ImplStreamerLoop {}
+unsafe impl Sync for ImplStreamerLoop {}
+
 impl ImplStreamerLoop {
     pub(crate) fn new(
         frontend_pipe: Arc<dyn FrontendPipe>,
@@ -86,10 +89,10 @@ impl ImplStreamerLoop {
 
         let pipeline = self.gstreamer.launch(&data.uri);
 
-        self.loop_gst(data, &pipeline);
+        self.loop_gst(data, &*pipeline);
     }
 
-    fn loop_gst(&self, data: &mut Data, pipeline: &Box<dyn GstreamerPipeline>) {
+    fn loop_gst(&self, data: &mut Data, pipeline: &dyn GstreamerPipeline) {
         'end_gst: loop {
             let msg_opt = self.gstreamer.bus_timed_pop_filtered();
 
@@ -97,7 +100,7 @@ impl ImplStreamerLoop {
             let mut status_lock = status_clone.lock().unwrap();
 
             if let Some(msg) = msg_opt {
-                let new_status_opt = self.handle_message(data, &msg, pipeline);
+                let new_status_opt = self.handle_message(data, &*msg, pipeline);
 
                 if let Some(new_status) = new_status_opt {
                     *status_lock = new_status;
@@ -117,10 +120,13 @@ impl ImplStreamerLoop {
     fn handle_message(
         &self,
         data: &mut Data,
-        msg: &Box<dyn GstreamerMessage>,
-        pipeline: &Box<dyn GstreamerPipeline>,
+        msg: &dyn GstreamerMessage,
+        pipeline: &dyn GstreamerPipeline,
     ) -> Option<Status> {
         match msg.msg_type() {
+            MsgType::None => {
+                panic!("Status wait is only for debugging.");
+            }
             MsgType::Error => {
                 eprintln!("Error received from element.");
                 Some(Status::Wait)
@@ -149,8 +155,8 @@ impl ImplStreamerLoop {
     fn handle_application_message(
         &self,
         data: &mut Data,
-        pipeline: &Box<dyn GstreamerPipeline>,
-        msg: &Box<dyn GstreamerMessage>,
+        pipeline: &dyn GstreamerPipeline,
+        msg: &dyn GstreamerMessage,
     ) -> Option<Status> {
         let name = msg.name();
 
@@ -191,7 +197,7 @@ impl ImplStreamerLoop {
         }
     }
 
-    fn update_position(&self, data: &mut Data, pipeline: &Box<dyn GstreamerPipeline>) {
+    fn update_position(&self, data: &mut Data, pipeline: &dyn GstreamerPipeline) {
         let current: i64 = if let Some(position) = pipeline.query_position() {
             position
         } else {
