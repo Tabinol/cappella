@@ -150,7 +150,7 @@ mod tests {
     use crate::gstreamer::{
         gstreamer::Gstreamer,
         tests_common::{
-            self, get_gst_bus_ptr, get_gst_element_ptr, ELEMENT_SET_STATE_RESULT, LOCK,
+            self, get_gst_bus_ptr, get_gst_element_ptr, ELEMENT_SET_STATE_RESULT,
             OBJECT_UNREF_CALL_NB,
         },
     };
@@ -199,9 +199,9 @@ mod tests {
 
     #[test]
     fn test_init() {
+        let _lock = tests_common::lock();
         before_each();
 
-        let _lock = LOCK.lock().unwrap();
         let gstreamer = ImplGstreamer::default();
 
         gstreamer.init();
@@ -211,9 +211,9 @@ mod tests {
 
     #[test]
     fn test_launch() {
+        let _lock = tests_common::lock();
         before_each();
 
-        let _lock = LOCK.lock().unwrap();
         let gstreamer = ImplGstreamer::default();
 
         gstreamer.launch("uri");
@@ -226,9 +226,9 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_launch_failure() {
+        let _lock = tests_common::lock();
         before_each();
 
-        let _lock = LOCK.lock().unwrap();
         let gstreamer = ImplGstreamer::default();
 
         unsafe { ELEMENT_SET_STATE_RESULT = GST_STATE_CHANGE_FAILURE }

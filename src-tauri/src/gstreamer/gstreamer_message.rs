@@ -109,7 +109,7 @@ mod tests {
         gstreamer::{
             gstreamer_message::{GstreamerMessage, ImplGstreamerMessage, MsgType},
             gstreamer_pipeline::{GstState, GST_STATE_NULL},
-            tests_common::{self, LOCK},
+            tests_common,
         },
         utils::cstring_converter::str_to_cstring,
     };
@@ -154,9 +154,9 @@ mod tests {
 
     #[test]
     fn test_msg_type_application() {
+        let _lock = tests_common::lock();
         before_each();
 
-        let _lock = LOCK.lock().unwrap();
         let structure_name = str_to_cstring("structure_name");
         let structure = unsafe { gst_structure_new_empty(structure_name.as_ptr()) };
         let msg = unsafe { gst_message_new_application(null_mut(), structure) };
@@ -169,9 +169,9 @@ mod tests {
 
     #[test]
     fn test_parse_state_changed() {
+        let _lock = tests_common::lock();
         before_each();
 
-        let _lock = LOCK.lock().unwrap();
         let structure_name = str_to_cstring("structure_name");
         let structure = unsafe { gst_structure_new_empty(structure_name.as_ptr()) };
         let msg = unsafe { gst_message_new_application(null_mut(), structure) };
@@ -189,9 +189,9 @@ mod tests {
 
     #[test]
     fn test_name() {
+        let _lock = tests_common::lock();
         before_each();
 
-        let _lock = LOCK.lock().unwrap();
         let structure_name = str_to_cstring("structure_name");
         let structure = unsafe { gst_structure_new_empty(structure_name.as_ptr()) };
         let msg = unsafe { gst_message_new_application(null_mut(), structure) };
@@ -204,9 +204,9 @@ mod tests {
 
     #[test]
     fn test_read() {
+        let _lock = tests_common::lock();
         before_each();
 
-        let _lock = LOCK.lock().unwrap();
         let structure_name = str_to_cstring("structure_name");
         let key = str_to_cstring("key");
         let value = str_to_cstring("value");
@@ -229,9 +229,9 @@ mod tests {
 
     #[test]
     fn test_drop() {
+        let _lock = tests_common::lock();
         before_each();
 
-        let _lock = LOCK.lock().unwrap();
         let structure_name = str_to_cstring("structure_name");
         let structure = unsafe { gst_structure_new_empty(structure_name.as_ptr()) };
         let msg = unsafe { gst_message_new_application(null_mut(), structure) };

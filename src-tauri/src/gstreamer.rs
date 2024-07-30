@@ -4,7 +4,10 @@ pub(crate) mod gstreamer_pipeline;
 
 #[cfg(test)]
 pub(crate) mod tests_common {
-    use std::{ptr, sync::Mutex};
+    use std::{
+        ptr,
+        sync::{Mutex, MutexGuard},
+    };
 
     use gstreamer_sys::{
         GstBus, GstElement, GstObject, GstStateChangeReturn, GST_STATE_CHANGE_SUCCESS,
@@ -12,7 +15,7 @@ pub(crate) mod tests_common {
 
     use crate::gstreamer::gstreamer_pipeline::GstState;
 
-    pub(crate) static LOCK: Mutex<()> = Mutex::new(());
+    static LOCK: Mutex<()> = Mutex::new(());
 
     pub(crate) static mut ELEMENT_SET_STATE_CHANGE: GstState = 0;
     pub(crate) static mut ELEMENT_SET_STATE_RESULT: GstStateChangeReturn = 0;
@@ -26,6 +29,11 @@ pub(crate) mod tests_common {
     pub(crate) fn get_gst_element_ptr() -> *mut GstElement {
         static mut ITEM: i32 = 0;
         unsafe { ptr::addr_of_mut!(ITEM) as *mut GstElement }
+    }
+
+    pub(crate) fn lock() -> MutexGuard<'static, ()> {
+        LOCK.lock()
+            .unwrap_or_else(|poison_error| poison_error.into_inner())
     }
 
     pub(crate) fn before_each() {

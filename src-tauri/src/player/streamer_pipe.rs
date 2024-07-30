@@ -14,7 +14,7 @@ pub(crate) enum Message {
     Stop,
 }
 
-pub(crate) trait StreamerPipe: Debug {
+pub(crate) trait StreamerPipe: Debug + Send + Sync {
     fn send(&self, message: Message);
 }
 #[derive(Debug)]
@@ -27,6 +27,9 @@ impl ImplStreamerPipe {
         Self { gstreamer }
     }
 }
+
+unsafe impl Send for ImplStreamerPipe {}
+unsafe impl Sync for ImplStreamerPipe {}
 
 impl StreamerPipe for ImplStreamerPipe {
     fn send(&self, message: Message) {

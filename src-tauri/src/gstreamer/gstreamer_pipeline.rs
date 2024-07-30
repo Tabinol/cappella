@@ -97,7 +97,7 @@ mod tests {
         },
         tests_common::{
             self, get_gst_bus_ptr, get_gst_element_ptr, ELEMENT_SET_STATE_CHANGE,
-            ELEMENT_SET_STATE_RESULT, LOCK, OBJECT_UNREF_CALL_NB,
+            ELEMENT_SET_STATE_RESULT, OBJECT_UNREF_CALL_NB,
         },
     };
 
@@ -127,9 +127,9 @@ mod tests {
 
     #[test]
     fn test_set_state() {
+        let _lock = tests_common::lock();
         before_each();
 
-        let _lock = LOCK.lock().unwrap();
         let gst_element = get_gst_element_ptr();
         let bus = Arc::new(Mutex::new(get_gst_bus_ptr()));
         let gstreamer_pipeline = ImplGstreamerPipeline::new(gst_element, bus);
@@ -141,9 +141,9 @@ mod tests {
 
     #[test]
     fn test_query_position() {
+        let _lock = tests_common::lock();
         before_each();
 
-        let _lock = LOCK.lock().unwrap();
         let gst_element = get_gst_element_ptr();
         let bus = Arc::new(Mutex::new(get_gst_bus_ptr()));
         let gstreamer_pipeline = ImplGstreamerPipeline::new(gst_element, bus);
@@ -156,9 +156,9 @@ mod tests {
 
     #[test]
     fn test_query_duration() {
+        let _lock = tests_common::lock();
         before_each();
 
-        let _lock = LOCK.lock().unwrap();
         let gst_element = get_gst_element_ptr();
         let bus = Arc::new(Mutex::new(get_gst_bus_ptr()));
         let gstreamer_pipeline = ImplGstreamerPipeline::new(gst_element, bus);
@@ -171,9 +171,8 @@ mod tests {
 
     #[test]
     fn test_drop() {
+        let _lock = tests_common::lock();
         before_each();
-
-        let _lock = LOCK.lock().unwrap();
 
         {
             let gst_element = get_gst_element_ptr();

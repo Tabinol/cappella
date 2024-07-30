@@ -5,7 +5,7 @@ use super::{
     streamer_pipe::{Message, StreamerPipe},
 };
 
-pub(crate) trait Player: Debug {
+pub(crate) trait Player: Debug + Send + Sync {
     fn play(&self, uri: &str);
     fn pause(&self);
     fn stop(&self);
@@ -59,11 +59,11 @@ impl Player for ImplPlayer {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{mpsc::Receiver, Arc, Mutex};
+    use std::sync::{Arc, Mutex};
 
     use crate::player::{
         player::{ImplPlayer, Player},
-        streamer::{Status, Streamer},
+        streamer::Streamer,
         streamer_pipe::{Message, StreamerPipe},
     };
 
@@ -78,7 +78,7 @@ mod tests {
             self.is_running
         }
 
-        fn start_thread(&self, _receiver: Receiver<Status>) {}
+        fn start_thread(&self) {}
 
         fn play(&self, uri: &str) {
             *self.uri.lock().unwrap() = uri.to_string();

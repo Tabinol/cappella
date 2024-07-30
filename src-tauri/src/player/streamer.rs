@@ -1,32 +1,32 @@
 use std::{
     fmt::Debug,
     sync::{
-        mpsc::{Receiver, Sender},
-        Arc, Mutex,
+        mpsc::{channel, Sender},
+        Arc, Mutex, MutexGuard, OnceLock,
     },
     thread::{self, JoinHandle},
 };
 
+use crate::player::streamer_loop::Status;
+
 use super::{
     streamer_loop::StreamerLoop,
-    streamer_pipe::{Message, StreamerPipe},
+    streamer_pipe::{self, StreamerPipe},
 };
 
 const THREAD_NAME: &str = "streamer";
 
 #[derive(Clone, Debug, Default)]
-pub(crate) enum Status {
+pub(crate) enum Message {
     #[default]
     None,
-    Wait,
     Play(String),
-    PlayNext(String),
     End,
 }
 
-pub(crate) trait Streamer: Debug {
+pub(crate) trait Streamer: Debug + Send + Sync {
     fn is_running(&self) -> bool;
-    fn start_thread(&self, receiver: Receiver<Status>);
+    fn start_thread(&self);
     fn play(&self, uri: &str);
     fn end(&self);
 }
@@ -35,8 +35,7 @@ pub(crate) trait Streamer: Debug {
 pub(crate) struct ImplStreamer {
     streamer_pipe: Arc<dyn StreamerPipe>,
     streamer_loop: Arc<dyn StreamerLoop>,
-    status: Arc<Mutex<Status>>,
-    sender: Sender<Status>,
+    sender: OnceLock<Sender<Message>>,
     join_handle: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -44,33 +43,52 @@ impl ImplStreamer {
     pub(crate) fn new(
         streamer_pipe: Arc<dyn StreamerPipe>,
         streamer_loop: Arc<dyn StreamerLoop>,
-        status: Arc<Mutex<Status>>,
-        sender: Sender<Status>,
     ) -> ImplStreamer {
         Self {
             streamer_pipe,
             streamer_loop,
-            status,
-            sender,
+            sender: OnceLock::default(),
             join_handle: Mutex::default(),
         }
     }
+
+    fn sender(&self) -> &Sender<Message> {
+        self.sender
+            .get()
+            .expect("Message sender to gstreamer is not initialized.")
+    }
+
+    fn join_handle_try_lock(&self) -> MutexGuard<Option<JoinHandle<()>>> {
+        self.join_handle
+            .try_lock()
+            .expect("The streamer join handle is already locked.")
+    }
 }
+
+unsafe impl Send for ImplStreamer {}
+unsafe impl Sync for ImplStreamer {}
 
 impl Streamer for ImplStreamer {
     fn is_running(&self) -> bool {
-        matches!(&*self.status.lock().unwrap(), Status::Play(_))
+        matches!(self.streamer_loop.status(), Status::Play(_))
     }
 
-    fn start_thread(&self, receiver: Receiver<Status>) {
-        let streamer_loop = self.streamer_loop.clone();
-        let mut join_handle_lock = self.join_handle.lock().unwrap();
+    fn start_thread(&self) {
+        let (sender, receiver) = channel::<Message>();
 
-        if join_handle_lock.is_some() {
-            panic!("The streamer thread is already started !");
+        self.sender
+            .set(sender)
+            .expect("Cannot start gstreamer thread because the message sender is already set.");
+
+        let streamer_loop = self.streamer_loop.clone();
+
+        let mut join_handle = self.join_handle_try_lock();
+
+        if join_handle.is_some() {
+            panic!("The streamer thread is already started.");
         }
 
-        *join_handle_lock = Some(
+        *join_handle = Some(
             thread::Builder::new()
                 .name(THREAD_NAME.to_string())
                 .spawn(move || {
@@ -81,44 +99,46 @@ impl Streamer for ImplStreamer {
     }
 
     fn play(&self, uri: &str) {
-        if matches!(&*self.status.lock().unwrap(), Status::Play(_)) {
-            self.streamer_pipe.send(Message::Next(uri.to_owned()));
+        if matches!(self.streamer_loop.status(), Status::Play(_)) {
+            self.streamer_pipe
+                .send(streamer_pipe::Message::Next(uri.to_owned()));
         } else {
-            self.sender.send(Status::Play(uri.to_owned())).unwrap();
+            self.sender().send(Message::Play(uri.to_owned())).unwrap();
         }
     }
 
     fn end(&self) {
-        let mut join_handle_lock = self.join_handle.lock().unwrap();
+        let mut join_handle_lock = self.join_handle_try_lock();
 
-        if join_handle_lock.is_none() {
-            return;
-        }
+        if let Some(join_handle) = join_handle_lock.take() {
+            if !join_handle.is_finished() {
+                if matches!(
+                    self.streamer_loop.status(),
+                    Status::Play(_) | Status::PlayNext(_)
+                ) {
+                    self.streamer_pipe.send(streamer_pipe::Message::Stop);
+                }
 
-        let join_handle = join_handle_lock.take().unwrap();
-        if !join_handle.is_finished() {
-            if matches!(
-                &*self.status.lock().unwrap(),
-                Status::Play(_) | Status::PlayNext(_)
-            ) {
-                self.streamer_pipe.send(Message::Stop);
+                self.sender().send(Message::End).unwrap();
+                join_handle.join().unwrap();
+            } else {
+                eprintln!("The streamer thread is already stopped.")
             }
-
-            self.sender.send(Status::End).unwrap();
-            join_handle.join().unwrap();
+        } else {
+            eprintln!("The streamer thread is never started.");
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        mpsc::{channel, Receiver},
-        Arc, Mutex,
+    use std::{
+        sync::{mpsc::Receiver, Arc, Mutex, RwLock},
+        time::Duration,
     };
 
     use crate::player::{
-        streamer::{ImplStreamer, Streamer},
+        streamer::{self, ImplStreamer, Streamer},
         streamer_loop::StreamerLoop,
         streamer_pipe::{Message, StreamerPipe},
     };
@@ -127,109 +147,102 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct MockStreamerPipe {
-        last_message: Mutex<Option<Message>>,
+        last_message: RwLock<Message>,
     }
 
     impl StreamerPipe for MockStreamerPipe {
         fn send(&self, message: Message) {
-            *self.last_message.lock().unwrap() = Some(message);
+            *self.last_message.write().unwrap() = message;
         }
     }
 
     #[derive(Debug, Default)]
     struct MockStreamerLoop {
-        status: Arc<Mutex<Status>>,
+        status: RwLock<Status>,
+        last_message: RwLock<streamer::Message>,
+        receiver: Mutex<Option<Receiver<super::Message>>>,
     }
 
     impl StreamerLoop for MockStreamerLoop {
-        fn run(&self, receiver: Receiver<Status>) {
-            *self.status.lock().unwrap() = receiver.recv().unwrap();
-            println!("status={:?}", *self.status.lock().unwrap());
+        fn run(&self, receiver: Receiver<super::Message>) {
+            let mut receiver_lock = self.receiver.lock().unwrap();
+            *receiver_lock = Some(receiver);
+            let last_message = (*receiver_lock)
+                .as_ref()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(10))
+                .expect("Message timeout.");
+            *self.last_message.write().unwrap() = last_message;
+        }
+
+        fn status(&self) -> Status {
+            (*self.status.read().unwrap()).clone()
         }
     }
 
     #[test]
     fn test_is_running_false() {
-        let streamer_pipe = Arc::new(MockStreamerPipe::default());
-        let streamer_loop = Arc::new(MockStreamerLoop::default());
-        let (sender, _receiver) = channel::<Status>();
+        let streamer_pipe = Arc::<MockStreamerPipe>::default();
+        let streamer_loop = Arc::<MockStreamerLoop>::default();
 
-        *streamer_loop.status.lock().unwrap() = Status::Wait;
-        let streamer = ImplStreamer::new(
-            streamer_pipe.clone(),
-            streamer_loop.clone(),
-            streamer_loop.status.clone(),
-            sender,
-        );
+        *streamer_loop.status.write().unwrap() = Status::Wait;
+        let streamer = ImplStreamer::new(streamer_pipe.clone(), streamer_loop.clone());
 
         assert!(!streamer.is_running());
     }
 
     #[test]
     fn test_is_running_true() {
-        let streamer_pipe = Arc::new(MockStreamerPipe::default());
-        let streamer_loop = Arc::new(MockStreamerLoop::default());
-        let (sender, _receiver) = channel::<Status>();
+        let streamer_pipe = Arc::<MockStreamerPipe>::default();
+        let streamer_loop = Arc::<MockStreamerLoop>::default();
 
-        *streamer_loop.status.lock().unwrap() = Status::Play("uri".to_string());
-        let streamer = ImplStreamer::new(
-            streamer_pipe.clone(),
-            streamer_loop.clone(),
-            streamer_loop.status.clone(),
-            sender,
-        );
+        *streamer_loop.status.write().unwrap() = Status::Play("uri".to_string());
+        let streamer = ImplStreamer::new(streamer_pipe.clone(), streamer_loop.clone());
 
         assert!(streamer.is_running());
     }
 
     #[test]
     fn test_start_thread() {
-        let streamer_pipe = Arc::new(MockStreamerPipe::default());
-        let streamer_loop = Arc::new(MockStreamerLoop::default());
-        let (sender, receiver) = channel::<Status>();
+        let streamer_pipe = Arc::<MockStreamerPipe>::default();
+        let streamer_loop = Arc::<MockStreamerLoop>::default();
 
-        let streamer = ImplStreamer::new(
-            streamer_pipe.clone(),
-            streamer_loop.clone(),
-            streamer_loop.status.clone(),
-            sender,
-        );
+        let streamer = ImplStreamer::new(streamer_pipe.clone(), streamer_loop.clone());
 
-        streamer.start_thread(receiver);
+        streamer.start_thread();
 
-        streamer.sender.send(Status::Wait).unwrap();
+        streamer
+            .sender
+            .get()
+            .unwrap()
+            .send(streamer::Message::End)
+            .unwrap();
 
         let join_handle = streamer.join_handle.lock().unwrap().take().unwrap();
         join_handle.join().unwrap();
-        let status_lock = streamer.status.lock().unwrap();
+        let last_message = (*streamer_loop.last_message.read().unwrap()).clone();
 
-        assert!(matches!(*status_lock, Status::Wait));
+        assert!(matches!(last_message, streamer::Message::End));
     }
 
     #[test]
     fn test_play_on_wait() {
-        let streamer_pipe = Arc::new(MockStreamerPipe::default());
-        let streamer_loop = Arc::new(MockStreamerLoop::default());
-        let (sender, receiver) = channel::<Status>();
+        let streamer_pipe = Arc::<MockStreamerPipe>::default();
+        let streamer_loop = Arc::<MockStreamerLoop>::default();
 
-        *streamer_loop.status.lock().unwrap() = Status::Wait;
-        let streamer = ImplStreamer::new(
-            streamer_pipe.clone(),
-            streamer_loop.clone(),
-            streamer_loop.status.clone(),
-            sender,
-        );
+        *streamer_loop.status.write().unwrap() = Status::Wait;
+        let streamer = ImplStreamer::new(streamer_pipe.clone(), streamer_loop.clone());
 
-        streamer.start_thread(receiver);
+        streamer.start_thread();
 
         streamer.play("new_uri");
 
         let join_handle = streamer.join_handle.lock().unwrap().take().unwrap();
         join_handle.join().unwrap();
-        let status_lock = streamer.status.lock().unwrap();
+        let status = (*streamer_loop.status.read().unwrap()).clone();
 
-        assert!(matches!(*status_lock, Status::Play(_)));
-        assert!(if let Status::Play(uri) = &*status_lock {
+        assert!(matches!(status, Status::Play(_)));
+        assert!(if let Status::Play(uri) = status {
             uri.eq("new_uri")
         } else {
             false
@@ -238,24 +251,16 @@ mod tests {
 
     #[test]
     fn test_play_on_play() {
-        let streamer_pipe = Arc::new(MockStreamerPipe::default());
-        let streamer_loop = Arc::new(MockStreamerLoop::default());
-        let (sender, _receiver) = channel::<Status>();
+        let streamer_pipe = Arc::<MockStreamerPipe>::default();
+        let streamer_loop = Arc::<MockStreamerLoop>::default();
 
-        *streamer_loop.status.lock().unwrap() = Status::Play("old_uri".to_string());
-        let streamer = ImplStreamer::new(
-            streamer_pipe.clone(),
-            streamer_loop.clone(),
-            streamer_loop.status.clone(),
-            sender,
-        );
+        *streamer_loop.status.write().unwrap() = Status::Play("old_uri".to_string());
+        let streamer = ImplStreamer::new(streamer_pipe.clone(), streamer_loop.clone());
 
         streamer.play("new_uri");
 
-        let message_lock = streamer_pipe.last_message.lock().unwrap();
+        let message = (*streamer_pipe.last_message.read().unwrap()).clone();
 
-        assert!(message_lock.is_some());
-        let message = message_lock.as_ref().unwrap();
         assert!(matches!(message, Message::Next(_)));
         assert!(if let Message::Next(uri) = message {
             uri.eq("new_uri")
@@ -266,50 +271,37 @@ mod tests {
 
     #[test]
     fn test_end_on_play() {
-        let streamer_pipe = Arc::new(MockStreamerPipe::default());
-        let streamer_loop = Arc::new(MockStreamerLoop::default());
-        let (sender, receiver) = channel::<Status>();
+        let streamer_pipe = Arc::<MockStreamerPipe>::default();
+        let streamer_loop = Arc::<MockStreamerLoop>::default();
 
-        *streamer_loop.status.lock().unwrap() = Status::Play("uri".to_owned());
-        let streamer = ImplStreamer::new(
-            streamer_pipe.clone(),
-            streamer_loop.clone(),
-            streamer_loop.status.clone(),
-            sender,
-        );
+        *streamer_loop.status.write().unwrap() = Status::Play("uri".to_owned());
+        let streamer = ImplStreamer::new(streamer_pipe.clone(), streamer_loop.clone());
 
-        streamer.start_thread(receiver);
+        streamer.start_thread();
 
         streamer.end();
 
-        let status_lock = streamer.status.lock().unwrap();
-        let message_lock = streamer_pipe.last_message.lock().unwrap();
+        let status = (*streamer_loop.status.read().unwrap()).clone();
+        let message = (*streamer_pipe.last_message.read().unwrap()).clone();
 
-        assert!(matches!(*status_lock, Status::End));
-        assert!(message_lock.is_some());
-        assert!(matches!(message_lock.as_ref().unwrap(), Message::Stop));
+        assert!(matches!(status, Status::End));
+        assert!(matches!(message, Message::Stop));
     }
 
     #[test]
     fn test_end_on_wait() {
-        let streamer_pipe = Arc::new(MockStreamerPipe::default());
-        let streamer_loop = Arc::new(MockStreamerLoop::default());
-        let (sender, receiver) = channel::<Status>();
+        let streamer_pipe = Arc::<MockStreamerPipe>::default();
+        let streamer_loop = Arc::<MockStreamerLoop>::default();
 
-        *streamer_loop.status.lock().unwrap() = Status::Wait;
-        let streamer = ImplStreamer::new(
-            streamer_pipe.clone(),
-            streamer_loop.clone(),
-            streamer_loop.status.clone(),
-            sender,
-        );
+        *streamer_loop.status.write().unwrap() = Status::Wait;
+        let streamer = ImplStreamer::new(streamer_pipe.clone(), streamer_loop.clone());
 
-        streamer.start_thread(receiver);
+        streamer.start_thread();
 
         streamer.end();
 
-        let status_lock = streamer.status.lock().unwrap();
+        let status = (*streamer_loop.status.read().unwrap()).clone();
 
-        assert!(matches!(*status_lock, Status::End));
+        assert!(matches!(status, Status::End));
     }
 }

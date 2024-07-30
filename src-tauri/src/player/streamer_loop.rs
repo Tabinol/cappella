@@ -1,6 +1,6 @@
 use std::{
     fmt::Debug,
-    sync::{mpsc::Receiver, Arc, Mutex},
+    sync::{mpsc::Receiver, Arc, RwLock},
 };
 
 use crate::{
@@ -13,12 +13,23 @@ use crate::{
 };
 
 use super::{
-    streamer::Status,
+    streamer,
     streamer_pipe::{Message, MESSAGE_FIELD_JSON, MESSAGE_NAME},
 };
 
+#[derive(Clone, Debug, Default)]
+pub(crate) enum Status {
+    #[default]
+    None,
+    Wait,
+    Play(String),
+    PlayNext(String),
+    End,
+}
+
 pub(crate) trait StreamerLoop: Debug + Send + Sync {
-    fn run(&self, receiver: Receiver<Status>);
+    fn run(&self, receiver: Receiver<streamer::Message>);
+    fn status(&self) -> Status;
 }
 
 #[derive(Clone, Debug)]
@@ -32,7 +43,7 @@ struct Data {
 pub(crate) struct ImplStreamerLoop {
     frontend_pipe: Arc<dyn FrontendPipe>,
     gstreamer: Arc<dyn Gstreamer>,
-    status: Arc<Mutex<Status>>,
+    status: RwLock<Status>,
 }
 
 unsafe impl Send for ImplStreamerLoop {}
@@ -42,44 +53,47 @@ impl ImplStreamerLoop {
     pub(crate) fn new(
         frontend_pipe: Arc<dyn FrontendPipe>,
         gstreamer: Arc<dyn Gstreamer>,
-        status: Arc<Mutex<Status>>,
     ) -> ImplStreamerLoop {
         Self {
             frontend_pipe,
             gstreamer,
-            status,
+            status: RwLock::default(),
         }
     }
 
-    fn gst_thread(&self, receiver: Receiver<Status>) {
-        *self.status.lock().unwrap() = Status::Wait;
+    fn gst_thread(&self, receiver: Receiver<streamer::Message>) {
+        *self.status.write().unwrap() = Status::Wait;
 
         'end_gst_thread: loop {
-            let status_clone = self.status.clone();
-            let mut current_status = status_clone.lock().unwrap().clone();
+            let current_status = (*self.status.read().unwrap()).clone();
 
-            if matches!(current_status, Status::Wait) {
-                current_status = receiver.recv().unwrap();
-                *status_clone.lock().unwrap() = current_status.clone();
-            }
+            match current_status {
+                Status::None => panic!("Incorrect status `None` for the streamer loop."),
+                Status::Wait => {
+                    let message = receiver.recv().unwrap();
 
-            if let Status::Play(uri) = current_status {
-                let mut data = Data {
-                    uri: uri.to_owned(),
-                    is_playing: true,
-                    duration: GST_CLOCK_TIME_NONE,
-                };
-                self.gst(&mut data);
-            }
-
-            let mut status_lock = status_clone.lock().unwrap();
-
-            if let Status::PlayNext(uri) = &*status_lock {
-                *status_lock = Status::Play(uri.to_owned());
-            }
-
-            if matches!(&*status_lock, Status::End) {
-                break 'end_gst_thread;
+                    match message {
+                        streamer::Message::None => {
+                            panic!("Incorrect message `None` for the streamer loop.")
+                        }
+                        streamer::Message::Play(uri) => {
+                            *self.status.write().unwrap() = Status::Play(uri)
+                        }
+                        streamer::Message::End => *self.status.write().unwrap() = Status::End,
+                    }
+                }
+                Status::Play(uri) => {
+                    let mut data = Data {
+                        uri: uri.to_owned(),
+                        is_playing: true,
+                        duration: GST_CLOCK_TIME_NONE,
+                    };
+                    self.gst(&mut data);
+                }
+                Status::PlayNext(uri) => {
+                    *self.status.write().unwrap() = Status::Play(uri.to_owned())
+                }
+                Status::End => break 'end_gst_thread,
             }
         }
     }
@@ -96,14 +110,13 @@ impl ImplStreamerLoop {
         'end_gst: loop {
             let msg_opt = self.gstreamer.bus_timed_pop_filtered();
 
-            let status_clone = self.status.clone();
-            let mut status_lock = status_clone.lock().unwrap();
+            let mut status = self.status.write().unwrap();
 
             if let Some(msg) = msg_opt {
                 let new_status_opt = self.handle_message(data, &*msg, pipeline);
 
                 if let Some(new_status) = new_status_opt {
-                    *status_lock = new_status;
+                    *status = new_status;
                 }
             } else {
                 if data.is_playing {
@@ -111,7 +124,7 @@ impl ImplStreamerLoop {
                 }
             }
 
-            if !matches!(&*status_lock, Status::Play(_)) {
+            if !matches!(*status, Status::Play(_)) {
                 break 'end_gst;
             }
         }
@@ -219,7 +232,11 @@ impl ImplStreamerLoop {
 }
 
 impl StreamerLoop for ImplStreamerLoop {
-    fn run(&self, receiver: Receiver<Status>) {
+    fn run(&self, receiver: Receiver<streamer::Message>) {
         self.gst_thread(receiver);
+    }
+
+    fn status(&self) -> Status {
+        (*self.status.read().unwrap()).clone()
     }
 }
