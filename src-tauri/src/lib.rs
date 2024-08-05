@@ -1,66 +1,47 @@
-use std::sync::Arc;
-
 use ::tauri::{Manager, State};
-use frontend::frontend_pipe::ImplFrontendPipe;
-use gstreamer::gstreamer::ImplGstreamer;
-use player::{
-    player::{ImplPlayer, Player},
-    streamer::{ImplStreamer, Streamer},
-    streamer_loop::ImplStreamerLoop,
-    streamer_pipe::ImplStreamerPipe,
-};
-use tauri::{
-    tauri_app_handle::{ImplTauriAppHandle, TauriAppHandle},
-    tauri_state::TauriState,
-};
+use player::player::Player;
 
 mod frontend;
 mod gstreamer;
 mod player;
-mod tauri;
 mod utils;
 
 pub(crate) const MAIN_WINDOW_LABEL: &str = "main";
 
 #[::tauri::command]
-fn play(state: State<TauriState>, uri: &str) {
-    state.player().play(uri);
+fn play(player: State<Box<dyn Player>>, uri: &str) {
+    player.play(uri);
 }
 
 #[::tauri::command]
-fn pause(state: State<TauriState>) {
-    state.player().pause();
+fn pause(player: State<Box<dyn Player>>) {
+    player.pause();
 }
 
 #[::tauri::command]
-fn stop(state: State<TauriState>) {
-    state.player().stop();
+fn stop(player: State<Box<dyn Player>>) {
+    player.stop();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let gstreamer = Arc::new(ImplGstreamer::default());
-    let streamer_pipe = Arc::new(ImplStreamerPipe::new(gstreamer.clone()));
-    let tauri_app_handle = Arc::<ImplTauriAppHandle>::default();
-    let frontend_pipe = Arc::new(ImplFrontendPipe::new(tauri_app_handle.clone()));
-    let streamer_loop = Arc::new(ImplStreamerLoop::new(
-        frontend_pipe.clone(),
-        gstreamer.clone(),
-    ));
-    let streamer = Arc::new(ImplStreamer::new(
-        streamer_pipe.clone(),
-        streamer_loop.clone(),
-    ));
-    let player = Arc::new(ImplPlayer::new(streamer.clone(), streamer_pipe.clone()));
+    let gstreamer = crate::gstreamer::gstreamer::new_boxed();
+    let streamer_pipe = crate::player::streamer_pipe::new_boxed(gstreamer.clone());
+    let frontend_pipe = crate::frontend::frontend_pipe::new_boxed();
+    let streamer_loop =
+        crate::player::streamer_loop::new_boxed(frontend_pipe.clone(), gstreamer.clone());
+    let streamer = player::streamer::new_boxed(streamer_pipe.clone(), streamer_loop.clone());
+    let player = player::player::new_boxed(streamer.clone(), streamer_pipe.clone());
 
-    let tauri_app_handle_clone = tauri_app_handle.clone();
-    let player_clone = player.clone();
+    let frontend_pipe_setup_clone = frontend_pipe.clone();
+    let player_manage_clone = player.clone();
+    let player_end_clone = player.clone();
 
     ::tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .manage(TauriState::new(player.clone()))
+        .manage(player_manage_clone)
         .setup(move |app| {
-            tauri_app_handle_clone.set_app_handle(app.app_handle().clone());
+            frontend_pipe_setup_clone.set_app_handle(app.app_handle());
             streamer.start_thread();
             Ok(())
         })
@@ -69,7 +50,7 @@ pub fn run() {
             if window.label().eq(MAIN_WINDOW_LABEL) {
                 match event {
                     ::tauri::WindowEvent::Destroyed => {
-                        player_clone.end();
+                        player_end_clone.end();
                     }
                     _ => {}
                 }

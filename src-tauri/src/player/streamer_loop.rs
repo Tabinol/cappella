@@ -3,6 +3,8 @@ use std::{
     sync::{mpsc::Receiver, Arc, RwLock},
 };
 
+use dyn_clone::DynClone;
+
 use crate::{
     frontend::frontend_pipe::FrontendPipe,
     gstreamer::{
@@ -27,40 +29,46 @@ pub(crate) enum Status {
     End,
 }
 
-pub(crate) trait StreamerLoop: Debug + Send + Sync {
+pub(crate) trait StreamerLoop: Debug + DynClone + Send + Sync {
     fn run(&self, receiver: Receiver<streamer::Message>);
     fn status(&self) -> Status;
 }
 
-#[derive(Clone, Debug)]
+dyn_clone::clone_trait_object!(StreamerLoop);
+
+pub(crate) fn new_boxed(
+    frontend_pipe: Box<dyn FrontendPipe>,
+    gstreamer: Box<dyn Gstreamer>,
+) -> Box<dyn StreamerLoop> {
+    Box::new(StreamerLoop_::new(frontend_pipe, gstreamer))
+}
+
+#[derive(Debug)]
 struct Data {
+    pipeline: Box<dyn GstreamerPipeline>,
     uri: String,
     is_playing: bool,
     duration: i64,
 }
 
-#[derive(Debug)]
-pub(crate) struct ImplStreamerLoop {
-    frontend_pipe: Arc<dyn FrontendPipe>,
-    gstreamer: Arc<dyn Gstreamer>,
-    status: RwLock<Status>,
+#[derive(Clone, Debug)]
+struct StreamerLoop_ {
+    frontend_pipe: Box<dyn FrontendPipe>,
+    gstreamer: Box<dyn Gstreamer>,
+    status: Arc<RwLock<Status>>,
 }
 
-unsafe impl Send for ImplStreamerLoop {}
-unsafe impl Sync for ImplStreamerLoop {}
+unsafe impl Send for StreamerLoop_ {}
+unsafe impl Sync for StreamerLoop_ {}
 
-impl ImplStreamerLoop {
-    pub(crate) fn new(
-        frontend_pipe: Arc<dyn FrontendPipe>,
-        gstreamer: Arc<dyn Gstreamer>,
-    ) -> ImplStreamerLoop {
+impl StreamerLoop_ {
+    fn new(frontend_pipe: Box<dyn FrontendPipe>, gstreamer: Box<dyn Gstreamer>) -> Self {
         Self {
             frontend_pipe,
             gstreamer,
-            status: RwLock::default(),
+            status: Arc::default(),
         }
     }
-
     fn gst_thread(&self, receiver: Receiver<streamer::Message>) {
         *self.status.write().unwrap() = Status::Wait;
 
@@ -83,12 +91,7 @@ impl ImplStreamerLoop {
                     }
                 }
                 Status::Play(uri) => {
-                    let mut data = Data {
-                        uri: uri.to_owned(),
-                        is_playing: true,
-                        duration: GST_CLOCK_TIME_NONE,
-                    };
-                    self.gst(&mut data);
+                    self.gst(uri.to_owned());
                 }
                 Status::PlayNext(uri) => {
                     *self.status.write().unwrap() = Status::Play(uri.to_owned())
@@ -98,29 +101,36 @@ impl ImplStreamerLoop {
         }
     }
 
-    fn gst(&self, data: &mut Data) {
+    fn gst(&self, uri: String) {
         self.gstreamer.init();
 
-        let pipeline = self.gstreamer.launch(&data.uri);
+        let pipeline = self.gstreamer.launch(&uri);
 
-        self.loop_gst(data, &*pipeline);
+        let mut data = Data {
+            pipeline,
+            uri,
+            is_playing: true,
+            duration: GST_CLOCK_TIME_NONE,
+        };
+
+        self.loop_gst(&mut data);
     }
 
-    fn loop_gst(&self, data: &mut Data, pipeline: &dyn GstreamerPipeline) {
+    fn loop_gst(&self, data: &mut Data) {
         'end_gst: loop {
             let msg_opt = self.gstreamer.bus_timed_pop_filtered();
 
             let mut status = self.status.write().unwrap();
 
             if let Some(msg) = msg_opt {
-                let new_status_opt = self.handle_message(data, &*msg, pipeline);
+                let new_status_opt = self.handle_message(data, &*msg);
 
                 if let Some(new_status) = new_status_opt {
                     *status = new_status;
                 }
             } else {
                 if data.is_playing {
-                    self.update_position(data, pipeline);
+                    self.update_position(data);
                 }
             }
 
@@ -130,12 +140,7 @@ impl ImplStreamerLoop {
         }
     }
 
-    fn handle_message(
-        &self,
-        data: &mut Data,
-        msg: &dyn GstreamerMessage,
-        pipeline: &dyn GstreamerPipeline,
-    ) -> Option<Status> {
+    fn handle_message(&self, data: &mut Data, msg: &dyn GstreamerMessage) -> Option<Status> {
         match msg.msg_type() {
             MsgType::None => {
                 panic!("Status wait is only for debugging.");
@@ -157,7 +162,7 @@ impl ImplStreamerLoop {
                 msg.parse_state_changed();
                 None
             }
-            MsgType::Application => self.handle_application_message(data, pipeline, msg),
+            MsgType::Application => self.handle_application_message(data, msg),
             MsgType::Unsupported(gst_message_type) => {
                 eprintln!("Unexpected message number received: {gst_message_type}");
                 None
@@ -168,7 +173,6 @@ impl ImplStreamerLoop {
     fn handle_application_message(
         &self,
         data: &mut Data,
-        pipeline: &dyn GstreamerPipeline,
         msg: &dyn GstreamerMessage,
     ) -> Option<Status> {
         let name = msg.name();
@@ -189,10 +193,10 @@ impl ImplStreamerLoop {
             }
             Message::Pause => {
                 if data.is_playing {
-                    pipeline.set_state(GST_STATE_PAUSED);
+                    data.pipeline.set_state(GST_STATE_PAUSED);
                     data.is_playing = false;
                 } else {
-                    pipeline.set_state(GST_STATE_PLAYING);
+                    data.pipeline.set_state(GST_STATE_PLAYING);
                     data.is_playing = true;
                 }
                 None
@@ -210,8 +214,8 @@ impl ImplStreamerLoop {
         }
     }
 
-    fn update_position(&self, data: &mut Data, pipeline: &dyn GstreamerPipeline) {
-        let current: i64 = if let Some(position) = pipeline.query_position() {
+    fn update_position(&self, data: &mut Data) {
+        let current: i64 = if let Some(position) = data.pipeline.query_position() {
             position
         } else {
             eprintln!("Could not query current position.");
@@ -219,7 +223,7 @@ impl ImplStreamerLoop {
         };
 
         if data.duration == GST_CLOCK_TIME_NONE as i64 {
-            if let Some(duration) = pipeline.query_duration() {
+            if let Some(duration) = data.pipeline.query_duration() {
                 data.duration = duration;
             } else {
                 eprintln!("Could not query current duration.");
@@ -231,7 +235,7 @@ impl ImplStreamerLoop {
     }
 }
 
-impl StreamerLoop for ImplStreamerLoop {
+impl StreamerLoop for StreamerLoop_ {
     fn run(&self, receiver: Receiver<streamer::Message>) {
         self.gst_thread(receiver);
     }

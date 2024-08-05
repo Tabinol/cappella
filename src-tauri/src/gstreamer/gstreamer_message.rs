@@ -1,5 +1,6 @@
 use std::fmt::Debug;
 
+use dyn_clone::DynClone;
 use gstreamer_sys::{
     gst_message_parse_state_changed, gst_message_unref, gst_structure_get_name,
     gst_structure_get_string, GstMessage, GstStructure, GST_MESSAGE_APPLICATION,
@@ -22,24 +23,30 @@ pub(crate) enum MsgType {
     Unsupported(u32),
 }
 
-pub(crate) trait GstreamerMessage: Debug {
+pub(crate) trait GstreamerMessage: Debug + DynClone {
     fn msg_type(&self) -> MsgType;
     fn parse_state_changed(&self);
     fn name(&self) -> &str;
     fn read(&self, name: &str) -> &str;
 }
 
-#[derive(Debug)]
-pub(crate) struct ImplGstreamerMessage {
+dyn_clone::clone_trait_object!(GstreamerMessage);
+
+pub(crate) fn new_boxed(
+    gst_message: *mut GstMessage,
+    gst_structure: *const GstStructure,
+) -> Box<dyn GstreamerMessage> {
+    Box::new(GstreamerMessage_::new(gst_message, gst_structure))
+}
+
+#[derive(Clone, Debug)]
+struct GstreamerMessage_ {
     gst_message: *mut GstMessage,
     gst_structure: *const GstStructure,
 }
 
-impl ImplGstreamerMessage {
-    pub(crate) fn new(
-        gst_message: *mut GstMessage,
-        gst_structure: *const GstStructure,
-    ) -> ImplGstreamerMessage {
+impl GstreamerMessage_ {
+    fn new(gst_message: *mut GstMessage, gst_structure: *const GstStructure) -> Self {
         Self {
             gst_message,
             gst_structure,
@@ -47,7 +54,7 @@ impl ImplGstreamerMessage {
     }
 }
 
-impl GstreamerMessage for ImplGstreamerMessage {
+impl GstreamerMessage for GstreamerMessage_ {
     fn msg_type(&self) -> MsgType {
         let type_ = unsafe { (*self.gst_message).type_ };
 
@@ -90,7 +97,7 @@ impl GstreamerMessage for ImplGstreamerMessage {
     }
 }
 
-impl Drop for ImplGstreamerMessage {
+impl Drop for GstreamerMessage_ {
     fn drop(&mut self) {
         unsafe { gst_message_unref(self.gst_message as *mut GstMessage) };
     }
@@ -107,7 +114,7 @@ mod tests {
 
     use crate::{
         gstreamer::{
-            gstreamer_message::{GstreamerMessage, ImplGstreamerMessage, MsgType},
+            gstreamer_message::MsgType,
             gstreamer_pipeline::{GstState, GST_STATE_NULL},
             tests_common,
         },
@@ -160,7 +167,7 @@ mod tests {
         let structure_name = str_to_cstring("structure_name");
         let structure = unsafe { gst_structure_new_empty(structure_name.as_ptr()) };
         let msg = unsafe { gst_message_new_application(null_mut(), structure) };
-        let gstreamer_message = ImplGstreamerMessage::new(msg, structure);
+        let gstreamer_message = super::new_boxed(msg, structure);
 
         let msg_type = gstreamer_message.msg_type();
 
@@ -175,7 +182,7 @@ mod tests {
         let structure_name = str_to_cstring("structure_name");
         let structure = unsafe { gst_structure_new_empty(structure_name.as_ptr()) };
         let msg = unsafe { gst_message_new_application(null_mut(), structure) };
-        let gstreamer_message = ImplGstreamerMessage::new(msg, structure);
+        let gstreamer_message = super::new_boxed(msg, structure);
 
         gstreamer_message.parse_state_changed();
 
@@ -195,7 +202,7 @@ mod tests {
         let structure_name = str_to_cstring("structure_name");
         let structure = unsafe { gst_structure_new_empty(structure_name.as_ptr()) };
         let msg = unsafe { gst_message_new_application(null_mut(), structure) };
-        let gstreamer_message = ImplGstreamerMessage::new(msg, structure);
+        let gstreamer_message = super::new_boxed(msg, structure);
 
         let name = gstreamer_message.name();
 
@@ -220,7 +227,7 @@ mod tests {
             )
         };
         let msg = unsafe { gst_message_new_application(null_mut(), structure) };
-        let gstreamer_message = ImplGstreamerMessage::new(msg, structure);
+        let gstreamer_message = super::new_boxed(msg, structure);
 
         let value = gstreamer_message.read("key");
 
@@ -237,7 +244,7 @@ mod tests {
         let msg = unsafe { gst_message_new_application(null_mut(), structure) };
 
         {
-            let _gstreamer_message = ImplGstreamerMessage::new(msg, structure);
+            let _gstreamer_message = super::new_boxed(msg, structure);
         }
 
         assert_eq!(unsafe { MESSAGE_UNREF_CALL_NB }, 1);
