@@ -3,7 +3,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use dyn_clone::DynClone;
 use gstreamer_sys::{
     gst_element_query_duration, gst_element_query_position, gst_element_set_state,
     gst_object_unref, GstBus, GstElement, GstObject, GST_FORMAT_TIME,
@@ -18,22 +17,20 @@ pub(crate) const GST_STATE_READY: GstState = gstreamer_sys::GST_STATE_READY;
 pub(crate) const GST_STATE_PAUSED: GstState = gstreamer_sys::GST_STATE_PAUSED;
 pub(crate) const GST_STATE_PLAYING: GstState = gstreamer_sys::GST_STATE_PLAYING;
 
-pub(crate) trait GstreamerPipeline: Debug + DynClone {
+pub(crate) trait GstreamerPipeline: Debug {
     fn set_state(&self, gst_state: GstState);
     fn query_position(&self) -> Option<i64>;
     fn query_duration(&self) -> Option<i64>;
 }
 
-dyn_clone::clone_trait_object!(GstreamerPipeline);
-
-pub(crate) fn new_boxed(
+pub(crate) fn new_box(
     gst_element: *mut GstElement,
     bus: Arc<Mutex<*mut GstBus>>,
 ) -> Box<dyn GstreamerPipeline> {
     Box::new(GstreamerPipeline_::new(gst_element, bus))
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct GstreamerPipeline_ {
     gst_element: *mut GstElement,
     bus: Arc<Mutex<*mut GstBus>>,
@@ -136,7 +133,7 @@ mod tests {
 
         let gst_element = get_gst_element_ptr();
         let bus = Arc::new(Mutex::new(get_gst_bus_ptr()));
-        let gstreamer_pipeline = super::new_boxed(gst_element, bus);
+        let gstreamer_pipeline = super::new_box(gst_element, bus);
 
         gstreamer_pipeline.set_state(GST_STATE_PAUSED);
 
@@ -150,7 +147,7 @@ mod tests {
 
         let gst_element = get_gst_element_ptr();
         let bus = Arc::new(Mutex::new(get_gst_bus_ptr()));
-        let gstreamer_pipeline = super::new_boxed(gst_element, bus);
+        let gstreamer_pipeline = super::new_box(gst_element, bus);
 
         let position = gstreamer_pipeline.query_position();
 
@@ -165,7 +162,7 @@ mod tests {
 
         let gst_element = get_gst_element_ptr();
         let bus = Arc::new(Mutex::new(get_gst_bus_ptr()));
-        let gstreamer_pipeline = super::new_boxed(gst_element, bus);
+        let gstreamer_pipeline = super::new_box(gst_element, bus);
 
         let duration = gstreamer_pipeline.query_duration();
 
@@ -181,7 +178,7 @@ mod tests {
         {
             let gst_element = get_gst_element_ptr();
             let bus = Arc::new(Mutex::new(get_gst_bus_ptr()));
-            let _gstreamer_pipeline = super::new_boxed(gst_element, bus);
+            let _gstreamer_pipeline = super::new_box(gst_element, bus);
         }
 
         assert_eq!(unsafe { OBJECT_UNREF_CALL_NB }, 2);

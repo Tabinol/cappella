@@ -3,8 +3,6 @@ use std::{
     sync::{mpsc::Receiver, Arc, RwLock},
 };
 
-use dyn_clone::DynClone;
-
 use crate::{
     frontend::frontend_pipe::FrontendPipe,
     gstreamer::{
@@ -29,18 +27,16 @@ pub(crate) enum Status {
     End,
 }
 
-pub(crate) trait StreamerLoop: Debug + DynClone + Send + Sync {
+pub(crate) trait StreamerLoop: Debug + Send + Sync {
     fn run(&self, receiver: Receiver<streamer::Message>);
     fn status(&self) -> Status;
 }
 
-dyn_clone::clone_trait_object!(StreamerLoop);
-
-pub(crate) fn new_boxed(
-    frontend_pipe: Box<dyn FrontendPipe>,
-    gstreamer: Box<dyn Gstreamer>,
-) -> Box<dyn StreamerLoop> {
-    Box::new(StreamerLoop_::new(frontend_pipe, gstreamer))
+pub(crate) fn new_arc(
+    frontend_pipe: Arc<dyn FrontendPipe>,
+    gstreamer: Arc<dyn Gstreamer>,
+) -> Arc<dyn StreamerLoop> {
+    Arc::new(StreamerLoop_::new(frontend_pipe, gstreamer))
 }
 
 #[derive(Debug)]
@@ -51,22 +47,22 @@ struct Data {
     duration: i64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct StreamerLoop_ {
-    frontend_pipe: Box<dyn FrontendPipe>,
-    gstreamer: Box<dyn Gstreamer>,
-    status: Arc<RwLock<Status>>,
+    frontend_pipe: Arc<dyn FrontendPipe>,
+    gstreamer: Arc<dyn Gstreamer>,
+    status: RwLock<Status>,
 }
 
 unsafe impl Send for StreamerLoop_ {}
 unsafe impl Sync for StreamerLoop_ {}
 
 impl StreamerLoop_ {
-    fn new(frontend_pipe: Box<dyn FrontendPipe>, gstreamer: Box<dyn Gstreamer>) -> Self {
+    fn new(frontend_pipe: Arc<dyn FrontendPipe>, gstreamer: Arc<dyn Gstreamer>) -> Self {
         Self {
             frontend_pipe,
             gstreamer,
-            status: Arc::default(),
+            status: RwLock::default(),
         }
     }
     fn gst_thread(&self, receiver: Receiver<streamer::Message>) {

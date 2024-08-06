@@ -5,7 +5,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use dyn_clone::DynClone;
 use gstreamer::glib::gobject_ffi::G_TYPE_STRING;
 use gstreamer_sys::{
     gst_bus_post, gst_bus_timed_pop_filtered, gst_element_get_bus, gst_element_set_state, gst_init,
@@ -26,20 +25,18 @@ pub(crate) const GST_CLOCK_TIME_NONE: i64 = gstreamer_sys::GST_CLOCK_TIME_NONE a
 
 const UPDATE_POSITION_MILLISECONDS: i64 = 100;
 
-pub(crate) trait Gstreamer: Debug + DynClone + Send + Sync {
+pub(crate) trait Gstreamer: Debug + Send + Sync {
     fn init(&self);
     fn launch(&self, uri: &str) -> Box<dyn GstreamerPipeline>;
     fn bus_timed_pop_filtered(&self) -> Option<Box<dyn GstreamerMessage>>;
     fn send_to_gst(&self, name: &str, key: &str, value: &str);
 }
 
-dyn_clone::clone_trait_object!(Gstreamer);
-
-pub(crate) fn new_boxed() -> Box<dyn Gstreamer> {
-    Box::<Gstreamer_>::default()
+pub(crate) fn new_arc() -> Arc<dyn Gstreamer> {
+    Arc::new(Gstreamer_::default())
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct Gstreamer_ {
     bus: Arc<Mutex<*mut GstBus>>,
 }
@@ -90,7 +87,7 @@ impl Gstreamer for Gstreamer_ {
                 panic!("GStreamer returns a failure.");
             }
 
-            gstreamer_pipeline::new_boxed(pipeline, self.bus.clone())
+            gstreamer_pipeline::new_box(pipeline, self.bus.clone())
         }
     }
 
@@ -115,7 +112,7 @@ impl Gstreamer for Gstreamer_ {
 
         if !msg.is_null() {
             let structure = unsafe { gst_message_get_structure(msg) as *mut GstStructure };
-            return Some(gstreamer_message::new_boxed(msg, structure));
+            return Some(gstreamer_message::new_box(msg, structure));
         }
 
         None
@@ -158,8 +155,12 @@ mod tests {
     use gstreamer::glib::ffi::GError;
     use gstreamer_sys::{GstBus, GstElement, GST_STATE_CHANGE_FAILURE};
 
-    use crate::gstreamer::tests_common::{
-        self, get_gst_bus_ptr, get_gst_element_ptr, ELEMENT_SET_STATE_RESULT, OBJECT_UNREF_CALL_NB,
+    use crate::gstreamer::{
+        gstreamer::{Gstreamer, Gstreamer_},
+        tests_common::{
+            self, get_gst_bus_ptr, get_gst_element_ptr, ELEMENT_SET_STATE_RESULT,
+            OBJECT_UNREF_CALL_NB,
+        },
     };
 
     static mut INIT_CALL_NB: u32 = 0;
@@ -207,7 +208,7 @@ mod tests {
         let _lock = tests_common::lock();
         before_each();
 
-        let gstreamer = super::new_boxed();
+        let gstreamer = Gstreamer_::default();
 
         gstreamer.init();
 
@@ -219,7 +220,7 @@ mod tests {
         let _lock = tests_common::lock();
         before_each();
 
-        let gstreamer = super::new_boxed();
+        let gstreamer = Gstreamer_::default();
 
         gstreamer.launch("uri");
 
@@ -234,7 +235,7 @@ mod tests {
         let _lock = tests_common::lock();
         before_each();
 
-        let gstreamer = super::new_boxed();
+        let gstreamer = Gstreamer_::default();
 
         unsafe { ELEMENT_SET_STATE_RESULT = GST_STATE_CHANGE_FAILURE }
         gstreamer.launch("uri");
