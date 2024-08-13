@@ -81,7 +81,14 @@ impl GstreamerThread {
                     eprintln!("GStreamer loop received a message with `None`.");
                     GstreamerMessage::None
                 }
-                GstreamerMessage::Play => self.gst(),
+                GstreamerMessage::Play => {
+                    if let Some(transfer) = self.gstreamer_data.consume() {
+                        self.gst(transfer.uri, transfer.data)
+                    } else {
+                        eprintln!("No data sent to the streamer.");
+                        GstreamerMessage::None
+                    }
+                }
                 GstreamerMessage::Pause | GstreamerMessage::Stop => GstreamerMessage::None,
                 GstreamerMessage::End => GstreamerMessage::End,
             }
@@ -118,16 +125,7 @@ impl GstreamerThread {
         pipeline
     }
 
-    fn gst(&self) -> GstreamerMessage {
-        let mut uri_and_data_opt = self.gstreamer_data.consume_uri_and_data();
-
-        if uri_and_data_opt.is_none() {
-            eprintln!("No data sent to the streamer.");
-            return GstreamerMessage::None;
-        }
-
-        let (uri, mut data) = uri_and_data_opt.take().unwrap();
-
+    fn gst(&self, uri: String, mut data: Data) -> GstreamerMessage {
         self.init();
         data.pipeline = self.launch(uri);
         data.is_playing = true;
