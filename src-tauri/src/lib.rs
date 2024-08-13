@@ -1,7 +1,16 @@
-use std::sync::{Arc, OnceLock};
+use std::{sync::mpsc::channel, thread::JoinHandle};
 
-use ::tauri::Manager;
-use player::player::Player;
+use ::tauri::{AppHandle, Manager, State, Window, WindowEvent};
+use frontend::frontend_pipe;
+use gstreamer::{
+    gstreamer_bus::{self},
+    gstreamer_data,
+    gstreamer_message::GstreamerMessage,
+    gstreamer_pipe,
+    gstreamer_thread::GstreamerThread,
+};
+use player::player_front;
+use tauri::local_state::LocalState;
 
 mod frontend;
 mod gstreamer;
@@ -11,57 +20,79 @@ mod utils;
 
 pub(crate) const MAIN_WINDOW_LABEL: &str = "main";
 
-static PLAYER: OnceLock<Arc<dyn Player>> = OnceLock::new();
-
-fn player<'a>() -> &'a dyn Player {
-    &**PLAYER.get().expect("Static player is not initialized.")
+#[::tauri::command]
+fn play(app_handle: AppHandle, state: State<LocalState>, uri: &str) {
+    let frontend_pipe = frontend_pipe::new_box(app_handle);
+    state.player_front().play(frontend_pipe, uri);
 }
 
 #[::tauri::command]
-fn play(uri: &str) {
-    player().play(uri);
+fn pause(state: State<LocalState>) {
+    state.player_front().pause();
 }
 
 #[::tauri::command]
-fn pause() {
-    player().pause();
-}
-
-#[::tauri::command]
-fn stop() {
-    player().stop();
+fn stop(state: State<LocalState>) {
+    state.player_front().stop();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let (gstreamer_join_handle, state) = init();
+
     ::tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .setup(|app| {
-            let gstreamer = gstreamer::gstreamer::new_arc();
-            let streamer_pipe = player::streamer_pipe::new_arc(gstreamer.clone());
-            let app_handle_box = Box::new(app.app_handle().clone());
-            let frontend_pipe = frontend::frontend_pipe::new_arc(app_handle_box);
-            let streamer_loop =
-                player::streamer_loop::new_arc(frontend_pipe.clone(), gstreamer.clone());
-            let streamer = player::streamer::new_arc(streamer_pipe.clone(), streamer_loop.clone());
-            let player = player::player::new_arc(streamer.clone(), streamer_pipe.clone());
-            PLAYER
-                .set(player.clone())
-                .expect("Static player is already initialized.");
-            streamer.start_thread();
-            Ok(())
-        })
+        .manage(state)
         .invoke_handler(::tauri::generate_handler![play, pause, stop,])
-        .on_window_event(move |window, event| {
-            if window.label().eq(MAIN_WINDOW_LABEL) {
-                match event {
-                    ::tauri::WindowEvent::Destroyed => {
-                        player().end();
-                    }
-                    _ => {}
-                }
-            }
-        })
+        .on_window_event(|window, event| on_window_event(window, event))
         .run(::tauri::generate_context!())
         .expect("error while running tauri application");
+
+    end(gstreamer_join_handle);
+}
+
+fn init() -> (JoinHandle<()>, LocalState) {
+    // Step 0 Rust/Tauri inits
+    let (sender, receiver) = channel::<GstreamerMessage>();
+
+    // Step 1 in alphabetical order
+    let gstreamer_bus = gstreamer_bus::new_arc();
+    let gstreamer_data = gstreamer_data::new_arc();
+
+    // Step 2 in alphabetical order
+    let gstreamer_pipe = gstreamer_pipe::new_box(gstreamer_bus.clone(), sender);
+
+    // Step 3 in alphabetical order
+    let player_front = player_front::new_box(gstreamer_data.clone(), gstreamer_pipe);
+
+    // Step 4 in alphabetical order
+    let state = LocalState::new(player_front);
+
+    // Start threads in alphabetical order
+    let gstreamer_thread_join_handle =
+        GstreamerThread::start(gstreamer_bus, gstreamer_data, receiver);
+
+    (gstreamer_thread_join_handle, state)
+}
+
+fn on_window_event(window: &Window, event: &WindowEvent) {
+    if window.label().eq(MAIN_WINDOW_LABEL) {
+        let app_handle = window.app_handle();
+        match event {
+            ::tauri::WindowEvent::Destroyed => {
+                end_streamer(app_handle);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn end_streamer(app_handle: &AppHandle) {
+    app_handle.state::<LocalState>().player_front().end();
+}
+
+fn end(gstreamer_join_handle: JoinHandle<()>) {
+    if let Some(error) = gstreamer_join_handle.join().err() {
+        eprint!("Error at from the join handle of the GStreamer: {error:?}")
+    }
 }

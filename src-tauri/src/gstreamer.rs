@@ -1,19 +1,19 @@
-pub(crate) mod gstreamer;
+pub(crate) mod gstreamer_bus;
+pub(crate) mod gstreamer_data;
 pub(crate) mod gstreamer_message;
-pub(crate) mod gstreamer_pipeline;
+pub(crate) mod gstreamer_pipe;
+pub(crate) mod gstreamer_thread;
 
 #[cfg(test)]
-pub(crate) mod tests_common {
+pub(crate) mod gstreamer_tests_common {
     use std::{
         ptr,
         sync::{Mutex, MutexGuard},
     };
 
-    use gstreamer_sys::{
-        GstBus, GstElement, GstObject, GstStateChangeReturn, GST_STATE_CHANGE_SUCCESS,
+    use gstreamer::ffi::{
+        GstBus, GstElement, GstObject, GstState, GstStateChangeReturn, GST_STATE_CHANGE_SUCCESS,
     };
-
-    use crate::gstreamer::gstreamer_pipeline::GstState;
 
     static LOCK: Mutex<()> = Mutex::new(());
 
