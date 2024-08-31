@@ -1,61 +1,61 @@
-use std::{fmt::Debug, sync::Arc};
+use std::fmt::Debug;
 
-use crate::{
-    frontend::frontend_pipe::FrontendPipe,
-    gstreamer::{
-        gstreamer_data::GstreamerData, gstreamer_message::GstreamerMessage,
-        gstreamer_pipe::GstreamerPipe,
-    },
-};
+use crate::streamer;
 
-pub(crate) trait PlayerFront: Debug + Send + Sync {
-    fn play(&self, frontend_pipe: Box<dyn FrontendPipe>, uri: &str);
+pub(crate) trait Front: Debug + Send + Sync {
+    fn play(&self, app_handle_addr: usize, uri: &str);
     fn pause(&self);
     fn stop(&self);
-    fn end(&self);
+    fn wait_until_end(&self);
 }
 
 pub(crate) fn new_box(
-    gstreamer_data: Arc<dyn GstreamerData>,
-    gstreamer_pipe: Box<dyn GstreamerPipe>,
-) -> Box<dyn PlayerFront> {
-    Box::new(PlayerFront_::new(gstreamer_data, gstreamer_pipe))
+    streamer_front: Box<dyn streamer::front::Front>,
+    streamer_pipe: Box<dyn streamer::pipe::Pipe>,
+) -> Box<dyn Front> {
+    Box::new(Front_ {
+        streamer_front,
+        streamer_pipe,
+    })
 }
 
 #[derive(Debug)]
-struct PlayerFront_ {
-    gstreamer_data: Arc<dyn GstreamerData>,
-    gstreamer_pipe: Box<dyn GstreamerPipe>,
+struct Front_ {
+    streamer_front: Box<dyn streamer::front::Front>,
+    streamer_pipe: Box<dyn streamer::pipe::Pipe>,
 }
 
-unsafe impl Send for PlayerFront_ {}
-unsafe impl Sync for PlayerFront_ {}
+unsafe impl Send for Front_ {}
+unsafe impl Sync for Front_ {}
 
-impl PlayerFront_ {
-    fn new(gstreamer_data: Arc<dyn GstreamerData>, gstreamer_pipe: Box<dyn GstreamerPipe>) -> Self {
-        Self {
-            gstreamer_data,
-            gstreamer_pipe,
+impl Front for Front_ {
+    fn play(&self, app_handle_addr: usize, uri: &str) {
+        if self.streamer_front.is_running() {
+            self.streamer_pipe
+                .send(streamer::message::Message::Play(
+                    app_handle_addr,
+                    uri.to_owned(),
+                ))
+                .unwrap_or_else(|err| eprintln!("Error on Play: {err}"));
+        } else {
+            self.streamer_front.start(app_handle_addr, uri);
         }
-    }
-}
-
-impl PlayerFront for PlayerFront_ {
-    fn play(&self, frontend_pipe: Box<dyn FrontendPipe>, uri: &str) {
-        self.gstreamer_data.send_data(frontend_pipe, uri.to_owned());
-        self.gstreamer_pipe.send(GstreamerMessage::Play);
     }
 
     fn pause(&self) {
-        self.gstreamer_pipe.send(GstreamerMessage::Pause);
+        self.streamer_pipe
+            .send(streamer::message::Message::Pause)
+            .unwrap_or_else(|err| eprintln!("Error on Pause: {err}"));
     }
 
     fn stop(&self) {
-        self.gstreamer_pipe.send(GstreamerMessage::Stop);
+        self.streamer_pipe
+            .send(streamer::message::Message::Stop)
+            .unwrap_or_else(|err| eprintln!("Error on Stop: {err}"));
     }
 
-    fn end(&self) {
-        self.gstreamer_pipe.send(GstreamerMessage::End);
+    fn wait_until_end(&self) {
+        self.streamer_front.wait_until_end();
     }
 }
 

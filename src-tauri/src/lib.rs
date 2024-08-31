@@ -1,29 +1,18 @@
-use std::{sync::mpsc::channel, thread::JoinHandle};
-
 use ::tauri::{AppHandle, Manager, State, Window, WindowEvent};
-use frontend::frontend_pipe;
-use gstreamer::{
-    gstreamer_bus::{self},
-    gstreamer_data,
-    gstreamer_message::GstreamerMessage,
-    gstreamer_pipe,
-    gstreamer_thread::GstreamerThread,
-};
-use player::player_front;
 use tauri::local_state::LocalState;
 
 mod frontend;
-mod gstreamer;
 mod player;
+mod streamer;
 mod tauri;
-mod utils;
 
 pub(crate) const MAIN_WINDOW_LABEL: &str = "main";
 
 #[::tauri::command]
 fn play(app_handle: AppHandle, state: State<LocalState>, uri: &str) {
-    let frontend_pipe = frontend_pipe::new_box(app_handle);
-    state.player_front().play(frontend_pipe, uri);
+    let app_handle_box = Box::new(app_handle);
+    let app_handle_addr = Box::into_raw(app_handle_box) as usize;
+    state.player_front().play(app_handle_addr, uri);
 }
 
 #[::tauri::command]
@@ -38,7 +27,7 @@ fn stop(state: State<LocalState>) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let (gstreamer_join_handle, state) = init();
+    let state = init();
 
     ::tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -47,32 +36,21 @@ pub fn run() {
         .on_window_event(|window, event| on_window_event(window, event))
         .run(::tauri::generate_context!())
         .expect("error while running tauri application");
-
-    end(gstreamer_join_handle);
 }
 
-fn init() -> (JoinHandle<()>, LocalState) {
-    // Step 0 Rust/Tauri inits
-    let (sender, receiver) = channel::<GstreamerMessage>();
-
+fn init() -> LocalState {
     // Step 1 in alphabetical order
-    let gstreamer_bus = gstreamer_bus::new_arc();
-    let gstreamer_data = gstreamer_data::new_arc();
+    let streamer_bus = streamer::bus::new_arc();
 
     // Step 2 in alphabetical order
-    let gstreamer_pipe = gstreamer_pipe::new_box(gstreamer_bus.clone(), sender);
+    let streamer_front = streamer::front::new_box(streamer_bus.clone());
+    let streamer_pipe = streamer::pipe::new_box(streamer_bus.clone());
 
     // Step 3 in alphabetical order
-    let player_front = player_front::new_box(gstreamer_data.clone(), gstreamer_pipe);
+    let player_front = player::front::new_box(streamer_front, streamer_pipe);
 
-    // Step 4 in alphabetical order
-    let state = LocalState::new(player_front);
-
-    // Start threads in alphabetical order
-    let gstreamer_thread_join_handle =
-        GstreamerThread::start(gstreamer_bus, gstreamer_data, receiver);
-
-    (gstreamer_thread_join_handle, state)
+    // Step 4 return
+    LocalState::new(player_front)
 }
 
 fn on_window_event(window: &Window, event: &WindowEvent) {
@@ -88,11 +66,7 @@ fn on_window_event(window: &Window, event: &WindowEvent) {
 }
 
 fn end_streamer(app_handle: &AppHandle) {
-    app_handle.state::<LocalState>().player_front().end();
-}
-
-fn end(gstreamer_join_handle: JoinHandle<()>) {
-    if let Some(error) = gstreamer_join_handle.join().err() {
-        eprint!("Error at from the join handle of the GStreamer: {error:?}")
-    }
+    let state = app_handle.state::<LocalState>();
+    state.player_front().stop();
+    state.player_front().wait_until_end();
 }

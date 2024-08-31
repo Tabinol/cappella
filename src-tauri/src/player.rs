@@ -1,1 +1,1 @@
-pub(crate) mod player_front;
+pub(crate) mod front;

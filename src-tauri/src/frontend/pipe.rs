@@ -4,34 +4,30 @@ use tauri::{AppHandle, Emitter, EventTarget};
 
 use crate::MAIN_WINDOW_LABEL;
 
-use super::frontend_message::FrontendMessage;
+use super::message::Message;
 
 const PLAYER_EVENT_NAME: &str = "PLAYER_EVENT";
 
-pub(crate) trait FrontendPipe: Debug + Send + Sync {
-    fn send(&self, frontend_message: FrontendMessage);
+pub(crate) trait Pipe: Debug + Send + Sync {
+    fn send(&self, frontend_message: Message);
 }
 
-pub(crate) fn new_box(app_handle: AppHandle) -> Box<dyn FrontendPipe> {
-    Box::new(FrontendPipe_::new(app_handle))
+pub(crate) fn new_box(app_handle_addr: usize) -> Box<dyn Pipe> {
+    let app_handle_box = unsafe { Box::from_raw(app_handle_addr as *mut AppHandle) };
+    let app_handle = *app_handle_box;
+    Box::new(Pipe_ { app_handle })
 }
 
 #[derive(Debug)]
-struct FrontendPipe_ {
+struct Pipe_ {
     app_handle: AppHandle,
 }
 
-unsafe impl Send for FrontendPipe_ {}
-unsafe impl Sync for FrontendPipe_ {}
+unsafe impl Send for Pipe_ {}
+unsafe impl Sync for Pipe_ {}
 
-impl FrontendPipe_ {
-    fn new(app_handle: AppHandle) -> Self {
-        Self { app_handle }
-    }
-}
-
-impl FrontendPipe for FrontendPipe_ {
-    fn send(&self, frontend_message: FrontendMessage) {
+impl Pipe for Pipe_ {
+    fn send(&self, frontend_message: Message) {
         if self
             .app_handle
             .emit_to(

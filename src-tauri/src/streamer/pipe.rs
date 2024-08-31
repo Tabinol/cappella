@@ -1,76 +1,42 @@
-use std::{
-    fmt::Debug,
-    ptr::null_mut,
-    sync::{
-        mpsc::{SendError, Sender},
-        Arc, MutexGuard,
-    },
-};
+use std::{fmt::Debug, sync::Arc};
 
-use gstreamer_sys::{gst_bus_post, gst_message_new_application, gst_structure_new_empty, GstBus};
-
-use crate::utils::cstring_converter::str_to_cstring;
-
-use super::{gstreamer_bus::GstreamerBus, gstreamer_message::GstreamerMessage};
+use super::{bus::Bus, message::Message};
 
 pub(crate) const MESSAGE_NAME: &str = "APP_MSG";
 
-pub(crate) trait GstreamerPipe: Debug {
-    fn send(&self, gstreamer_message: GstreamerMessage);
+pub(crate) trait Pipe: Debug {
+    fn send(&self, message: Message) -> Result<(), String>;
 }
 
-pub(crate) fn new_box(
-    gstreamer_bus: Arc<dyn GstreamerBus>,
-    sender: Sender<GstreamerMessage>,
-) -> Box<dyn GstreamerPipe> {
-    Box::new(GstreamerPipe_::new(gstreamer_bus, sender))
+pub(crate) fn new_box(bus: Arc<dyn Bus>) -> Box<dyn Pipe> {
+    Box::new(Pipe_ { bus })
 }
 
 #[derive(Debug)]
-struct GstreamerPipe_ {
-    gstreamer_bus: Arc<dyn GstreamerBus>,
-    sender: Sender<GstreamerMessage>,
+struct Pipe_ {
+    bus: Arc<dyn Bus>,
 }
 
-impl GstreamerPipe_ {
-    fn new(gstreamer_bus: Arc<dyn GstreamerBus>, sender: Sender<GstreamerMessage>) -> Self {
-        Self {
-            gstreamer_bus,
-            sender,
-        }
-    }
+impl Pipe for Pipe_ {
+    fn send(&self, message: Message) -> Result<(), String> {
+        let bus_lock = self.bus.get_lock();
 
-    fn send_to_thread(
-        &self,
-        gstreamer_message: GstreamerMessage,
-    ) -> Result<(), SendError<GstreamerMessage>> {
-        self.sender.send(gstreamer_message)
-    }
+        if let Some(bus) = bus_lock.as_ref() {
+            let structure = message.to_structure(MESSAGE_NAME)?;
+            let message = structure.message_new_application()?;
 
-    fn send_to_gst(&self, bus_lock: MutexGuard<*mut GstBus>) {
-        let structure;
-        let name_cstring = str_to_cstring(MESSAGE_NAME);
+            if bus.post(&message) {
+                return Ok(());
+            }
 
-        unsafe {
-            structure = gst_structure_new_empty(name_cstring.as_ptr());
-            let gst_msg = gst_message_new_application(null_mut(), structure);
-            gst_bus_post(*bus_lock, gst_msg);
-        }
-    }
-}
-
-impl GstreamerPipe for GstreamerPipe_ {
-    fn send(&self, gstreamer_message: GstreamerMessage) {
-        if let Some(err) = self.send_to_thread(gstreamer_message).err() {
-            eprintln!("Error while sending the message to GStreamer thread: {err}");
-            return;
+            return Err(format!(
+                "The message receiver returns false. Message: {message:?}"
+            ));
         }
 
-        let bus_lock = self.gstreamer_bus.get_lock();
-
-        if !(*bus_lock).is_null() {
-            self.send_to_gst(bus_lock);
-        }
+        Err(format!(
+            "The bus is null or the thread is not started. Message: {message:?}"
+        ))
     }
 }
 

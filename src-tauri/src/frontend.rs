@@ -1,2 +1,2 @@
-pub(crate) mod frontend_message;
-pub(crate) mod frontend_pipe;
+pub(crate) mod message;
+pub(crate) mod pipe;
