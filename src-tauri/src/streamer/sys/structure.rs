@@ -17,15 +17,18 @@ pub(crate) type CField = (CString, GType, Box<dyn Any>);
 pub(crate) type MemoryStore = (CString, Vec<CField>);
 
 #[derive(Debug)]
-pub(crate) struct Structure(NonNull<GstStructure>, Option<MemoryStore>);
+pub(crate) struct Structure {
+    ptr: NonNull<GstStructure>,
+    _memory_store: Option<MemoryStore>,
+}
 
 impl Structure {
-    pub(crate) fn new(ptr: NonNull<GstStructure>, memory_store: Option<MemoryStore>) -> Self {
-        Self(ptr, memory_store)
+    pub(crate) fn new(ptr: NonNull<GstStructure>, _memory_store: Option<MemoryStore>) -> Self {
+        Self { ptr, _memory_store }
     }
 
     pub(crate) fn get(&self) -> *mut GstStructure {
-        self.0.as_ptr()
+        self.ptr.as_ptr()
     }
 
     pub(crate) fn name(&self) -> &str {

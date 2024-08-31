@@ -8,11 +8,9 @@ use std::{
     time::Duration,
 };
 
-use crate::frontend;
-
 use super::{
     bus::Bus,
-    loop_::{self, Loop_},
+    streamer_loop::{self, StreamerLoop},
 };
 
 const THREAD_NAME: &str = "streamer";
@@ -49,15 +47,14 @@ impl Front for Front_ {
         }
 
         let bus = self.bus.clone();
+        let uri_owned = uri.to_owned();
         let (sender, receiver) = mpsc::channel::<()>();
         *self.receiver.lock().unwrap() = Some(receiver);
-        let uri_owned = uri.to_owned();
 
         let join_handle = thread::Builder::new()
             .name(THREAD_NAME.to_string())
             .spawn(move || {
-                let frontend_pipe = frontend::pipe::new_box(app_handle_addr);
-                loop_::new_impl(bus, frontend_pipe, sender).gst_loop(&uri_owned);
+                streamer_loop::new_impl(bus, sender).start_loop(app_handle_addr, &uri_owned);
             })
             .expect("Unable to start the GStreamer loop.");
 

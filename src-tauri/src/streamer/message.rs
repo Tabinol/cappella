@@ -1,7 +1,7 @@
 use super::sys::{gstreamer, structure::Structure, structure_field};
 
 pub(crate) type Uri = String;
-pub(crate) type BoxFrontendPipePtr = usize;
+pub(crate) type AppHandleAddr = usize;
 
 const TITLE_FIELD: &str = "TITLE";
 const PTR_FIELD: &str = "PTR";
@@ -16,7 +16,7 @@ const MESSAGE_TITLE_VALUE_STOP: &str = "Stop";
 pub(crate) enum Message {
     #[default]
     None,
-    Play(BoxFrontendPipePtr, Uri),
+    Play(AppHandleAddr, Uri),
     Pause,
     Stop,
 }

@@ -14,50 +14,54 @@ use crate::frontend::{self};
 
 use super::{
     bus::Bus,
-    message::Message,
+    message::{AppHandleAddr, Message, Uri},
     pipe::MESSAGE_NAME,
     sys::{self, element::Element, gstreamer},
 };
 
 const UPDATE_POSITION_DURATION: Duration = Duration::from_millis(100);
 
-pub(crate) trait Loop_: Debug {
-    fn gst_loop(&self, uri: &str);
+pub(crate) trait StreamerLoop: Debug {
+    fn start_loop(&self, app_handle_addr: usize, uri: &str);
 }
 
-pub(crate) fn new_impl(
-    bus: Arc<dyn Bus>,
-    frontend_pipe: Box<dyn frontend::pipe::Pipe>,
-    sender: mpsc::Sender<()>,
-) -> impl Loop_ {
-    Loop__ {
-        bus,
-        frontend_pipe,
-        sender,
-    }
+pub(crate) fn new_impl(bus: Arc<dyn Bus>, sender: mpsc::Sender<()>) -> impl StreamerLoop {
+    StreamerLoop_ { bus, sender }
 }
 
 #[derive(Debug)]
-struct Loop__ {
+struct StreamerLoop_ {
     bus: Arc<dyn Bus>,
-    frontend_pipe: Box<dyn frontend::pipe::Pipe>,
     sender: mpsc::Sender<()>,
 }
 
 #[derive(Debug)]
 struct Data {
+    frontend_pipe: Box<dyn frontend::pipe::Pipe>,
     element: Element,
     is_playing: bool,
     duration: i64,
 }
 
-impl Loop_ for Loop__ {
-    fn gst_loop(&self, uri: &str) {
+impl StreamerLoop for StreamerLoop_ {
+    fn start_loop(&self, app_handle_addr: usize, uri: &str) {
+        let mut play = Some((app_handle_addr, uri.to_owned()));
+
+        while let Some((app_handle_addr, uri)) = play {
+            play = self.gst_loop(app_handle_addr, &uri);
+        }
+    }
+}
+
+impl StreamerLoop_ {
+    fn gst_loop(&self, app_handle_addr: usize, uri: &str) -> Option<(AppHandleAddr, Uri)> {
+        let frontend_pipe = frontend::pipe::new_box(app_handle_addr);
         gstreamer::init();
         let element = gstreamer::parse_launch(uri).unwrap_or_else(|err| panic!("{err}"));
         self.bus.set(element.get_bus());
 
         let mut data = Data {
+            frontend_pipe,
             element,
             is_playing: true,
             duration: GST_CLOCK_TIME_NONE as i64,
@@ -92,10 +96,14 @@ impl Loop_ for Loop__ {
 
         let _bus = self.bus.take();
         self.sender.send(()).unwrap();
-    }
-}
 
-impl Loop__ {
+        if let Message::Play(app_handle_addr, uri) = message {
+            return Some((app_handle_addr, uri));
+        }
+
+        None
+    }
+
     fn handle_message(&self, data: &mut Data, msg: &sys::message::Message) -> Message {
         match msg.type_() {
             GST_MESSAGE_ERROR => {
@@ -158,7 +166,6 @@ impl Loop__ {
                 }
                 Ok(Message::None)
             }
-            // TODO PLAY NEW
             default => Ok(default),
         }
     }

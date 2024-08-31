@@ -18,14 +18,17 @@ impl State {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn old_state(&self) -> GstState {
         self.old_state
     }
 
+    #[allow(dead_code)]
     pub(crate) fn new_state(&self) -> GstState {
         self.new_state
     }
 
+    #[allow(dead_code)]
     pub(crate) fn pending_state(&self) -> GstState {
         self.pending_state
     }
