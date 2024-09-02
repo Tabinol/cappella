@@ -5,13 +5,13 @@ use std::{
 
 use super::sys;
 
-pub(crate) trait Bus: Debug + Send + Sync {
+pub trait Bus: Debug + Send + Sync {
     fn set(&self, bus: sys::bus::Bus);
     fn get_lock(&self) -> MutexGuard<Option<sys::bus::Bus>>;
     fn take(&self) -> sys::bus::Bus;
 }
 
-pub(crate) fn new_arc() -> Arc<dyn Bus> {
+pub fn new_arc() -> Arc<dyn Bus> {
     Arc::<Bus_>::default()
 }
 

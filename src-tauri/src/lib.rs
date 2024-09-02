@@ -6,7 +6,7 @@ mod player;
 mod streamer;
 mod tauri;
 
-pub(crate) const MAIN_WINDOW_LABEL: &str = "main";
+pub const MAIN_WINDOW_LABEL: &str = "main";
 
 #[::tauri::command]
 fn play(app_handle: AppHandle, state: State<LocalState>, uri: &str) {

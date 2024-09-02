@@ -1,5 +1,5 @@
 #[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
-pub(crate) enum Message {
+pub enum Message {
     #[default]
     None,
     Temp, // TODO Remove

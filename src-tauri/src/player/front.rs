@@ -2,14 +2,14 @@ use std::fmt::Debug;
 
 use crate::streamer;
 
-pub(crate) trait Front: Debug + Send + Sync {
+pub trait Front: Debug + Send + Sync {
     fn play(&self, app_handle_addr: usize, uri: &str);
     fn pause(&self);
     fn stop(&self);
     fn wait_until_end(&self);
 }
 
-pub(crate) fn new_box(
+pub fn new_box(
     streamer_front: Box<dyn streamer::front::Front>,
     streamer_pipe: Box<dyn streamer::pipe::Pipe>,
 ) -> Box<dyn Front> {

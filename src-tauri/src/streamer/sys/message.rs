@@ -1,4 +1,4 @@
-use std::{fmt::Debug, ptr::NonNull};
+use std::fmt::Debug;
 
 use gstreamer_sys::{
     gst_message_get_structure, gst_message_parse_state_changed, gst_message_unref, GstMessage,
@@ -8,30 +8,28 @@ use gstreamer_sys::{
 use super::{state::State, structure::Structure};
 
 #[derive(Debug)]
-pub(crate) struct Message(NonNull<GstMessage>);
+pub struct Message(*mut GstMessage);
 
 impl Message {
-    pub(crate) fn new(message: NonNull<GstMessage>) -> Self {
+    pub fn new(message: *mut GstMessage) -> Self {
         Self(message)
     }
 
-    pub(crate) fn get(&self) -> *mut GstMessage {
-        self.0.as_ptr()
+    pub fn get(&self) -> *mut GstMessage {
+        self.0
     }
 
-    pub(crate) fn type_(&self) -> GstMessageType {
+    pub fn type_(&self) -> GstMessageType {
         unsafe { (*self.get()).type_ }
     }
 
-    pub(crate) fn structure(&self) -> Structure {
-        let structure_ptr = unsafe { gst_message_get_structure(self.get()) };
-        let structure = NonNull::new(structure_ptr as *mut GstStructure)
-            .expect("The message structure is null.");
+    pub fn structure(&self) -> Structure {
+        let structure_ptr = unsafe { gst_message_get_structure(self.get()) } as *mut GstStructure;
 
-        Structure::new(structure, None)
+        Structure::new_from_message(structure_ptr)
     }
 
-    pub(crate) fn state_changed(&self) -> State {
+    pub fn state_changed(&self) -> State {
         let mut old_state: GstState = GST_STATE_NULL;
         let mut new_state: GstState = GST_STATE_NULL;
         let mut pending_state: GstState = GST_STATE_NULL;

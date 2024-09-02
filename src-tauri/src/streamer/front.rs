@@ -16,13 +16,13 @@ use super::{
 const THREAD_NAME: &str = "streamer";
 const STOP_TIMEOUT_DURATION: Duration = Duration::from_secs(5);
 
-pub(crate) trait Front: Debug + Send + Sync {
+pub trait Front: Debug + Send + Sync {
     fn start(&self, app_handle_addr: usize, uri: &str);
     fn is_running(&self) -> bool;
     fn wait_until_end(&self);
 }
 
-pub(crate) fn new_box(bus: Arc<dyn Bus>) -> Box<dyn Front> {
+pub fn new_box(bus: Arc<dyn Bus>) -> Box<dyn Front> {
     Box::new(Front_ {
         bus,
         receiver: Mutex::default(),

@@ -1,54 +1,100 @@
 use std::{
     any::Any,
-    ffi::{c_char, CStr, CString},
-    ptr::{null_mut, NonNull},
+    collections::VecDeque,
+    ffi::{c_char, CString},
+    ptr::{null, null_mut},
 };
 
 use glib_sys::{GType, GFALSE};
 use gstreamer_sys::{
     gst_message_new_application, gst_structure_get_int64, gst_structure_get_name,
-    gst_structure_get_string, gst_structure_get_uint64, GstStructure,
+    gst_structure_get_string, gst_structure_get_uint64, gst_structure_new, GstStructure,
 };
 
-use super::message::Message;
+use super::{message::Message, structure_field};
 
-pub(crate) type CField = (CString, GType, Box<dyn Any>);
+pub type CField = (CString, GType, Box<dyn Any>);
 
-pub(crate) type MemoryStore = (CString, Vec<CField>);
+pub type MemoryStore = (CString, Vec<CField>);
 
 #[derive(Debug)]
-pub(crate) struct Structure {
-    ptr: NonNull<GstStructure>,
+pub struct Structure {
+    ptr: *mut GstStructure,
+    name: String,
     _memory_store: Option<MemoryStore>,
 }
 
 impl Structure {
-    pub(crate) fn new(ptr: NonNull<GstStructure>, _memory_store: Option<MemoryStore>) -> Self {
-        Self { ptr, _memory_store }
+    pub fn new(
+        name: &str,
+        fields: Vec<Box<dyn structure_field::Field>>,
+    ) -> Result<Self, String> {
+        let c_name = CString::new(name).unwrap();
+        let mut c_fields = Vec::<CField>::new();
+        let mut c_values = VecDeque::<*const c_char>::new();
+
+        for field in fields {
+            let field_name = CString::new(field.field_name()).unwrap();
+            let g_type = field.g_type();
+            let value = field.c_value();
+            c_values.push_back(field_name.as_ptr());
+            c_values.push_back(g_type as *const c_char);
+            c_values.push_back(std::ptr::addr_of!(*value) as *const c_char);
+            c_fields.push((field_name, g_type, value));
+        }
+
+        c_values.push_back(null());
+        let first_field = c_values.pop_front().unwrap();
+        let ptr = unsafe { gst_structure_new(c_name.as_ptr(), first_field, c_values) };
+
+        if ptr.is_null() {
+            return Err("GStreamer returned a null structure for the message.".to_owned());
+        }
+
+        Ok(Self {
+            ptr,
+            name: name.to_owned(),
+            _memory_store: Some((c_name, c_fields)),
+        })
     }
 
-    pub(crate) fn get(&self) -> *mut GstStructure {
-        self.ptr.as_ptr()
-    }
+    pub fn new_from_message(ptr: *mut GstStructure) -> Self {
+        if ptr.is_null() {
+            panic!("The message structure is null.");
+        }
 
-    pub(crate) fn name(&self) -> &str {
-        unsafe {
-            let name_ptr = gst_structure_get_name(self.get());
-            CStr::from_ptr(name_ptr).to_str().unwrap()
+        let name_ptr = unsafe { gst_structure_get_name(ptr) };
+        let name = unsafe { CString::from_raw(name_ptr as *mut c_char) }
+            .to_str()
+            .unwrap()
+            .to_owned();
+
+        Self {
+            ptr,
+            name,
+            _memory_store: None,
         }
     }
 
-    pub(crate) fn message_new_application(&self) -> Result<Message, String> {
+    pub fn get(&self) -> *mut GstStructure {
+        self.ptr
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn message_new_application(&self) -> Result<Message, String> {
         let message_ptr = unsafe { gst_message_new_application(null_mut(), self.get()) };
 
-        if let Some(message) = NonNull::new(message_ptr) {
-            return Ok(Message::new(message));
+        if message_ptr.is_null() {
+            return Err(format!("Error creating the message"));
         }
 
-        Err(format!("Error creating the message"))
+        Ok(Message::new(message_ptr))
     }
 
-    pub(crate) fn get_string(&self, field_name: &str) -> Result<String, String> {
+    pub fn get_string(&self, field_name: &str) -> Result<String, String> {
         let field_name_cstring = self.field_name_to_cstring(field_name)?;
 
         let value_ptr =
@@ -67,7 +113,7 @@ impl Structure {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn get_i64(&self, field_name: &str) -> Result<i64, String> {
+    pub fn get_i64(&self, field_name: &str) -> Result<i64, String> {
         let field_name_cstring = self.field_name_to_cstring(field_name)?;
 
         let mut value: i64 = 0;
@@ -83,7 +129,7 @@ impl Structure {
         Ok(value)
     }
 
-    pub(crate) fn get_u64(&self, field_name: &str) -> Result<u64, String> {
+    pub fn get_u64(&self, field_name: &str) -> Result<u64, String> {
         let field_name_cstring = self.field_name_to_cstring(field_name)?;
 
         let mut value: u64 = 0;

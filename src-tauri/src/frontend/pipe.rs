@@ -8,11 +8,11 @@ use super::message::Message;
 
 const PLAYER_EVENT_NAME: &str = "PLAYER_EVENT";
 
-pub(crate) trait Pipe: Debug + Send + Sync {
+pub trait Pipe: Debug + Send + Sync {
     fn send(&self, frontend_message: Message);
 }
 
-pub(crate) fn new_box(app_handle_addr: usize) -> Box<dyn Pipe> {
+pub fn new_box(app_handle_addr: usize) -> Box<dyn Pipe> {
     let app_handle_box = unsafe { Box::from_raw(app_handle_addr as *mut AppHandle) };
     let app_handle = *app_handle_box;
     Box::new(Pipe_ { app_handle })

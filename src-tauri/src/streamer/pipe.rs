@@ -2,13 +2,13 @@ use std::{fmt::Debug, sync::Arc};
 
 use super::{bus::Bus, message::Message};
 
-pub(crate) const MESSAGE_NAME: &str = "APP_MSG";
+pub const MESSAGE_NAME: &str = "APP_MSG";
 
-pub(crate) trait Pipe: Debug {
+pub trait Pipe: Debug {
     fn send(&self, message: Message) -> Result<(), String>;
 }
 
-pub(crate) fn new_box(bus: Arc<dyn Bus>) -> Box<dyn Pipe> {
+pub fn new_box(bus: Arc<dyn Bus>) -> Box<dyn Pipe> {
     Box::new(Pipe_ { bus })
 }
 

@@ -1,1 +1,1 @@
-pub(crate) mod front;
+pub mod front;

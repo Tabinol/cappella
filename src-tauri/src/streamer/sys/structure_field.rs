@@ -3,13 +3,13 @@ use std::{any::Any, ffi::CString, fmt::Debug};
 use glib_sys::GType;
 use gobject_sys::{G_TYPE_INT64, G_TYPE_STRING, G_TYPE_UINT64};
 
-pub(crate) trait Field: Debug {
+pub trait Field: Debug {
     fn field_name(&self) -> &str;
     fn g_type(&self) -> GType;
     fn c_value(&self) -> Box<dyn Any>;
 }
 
-pub(crate) fn new_box_string(field_name: &str, value: &str) -> Box<dyn Field> {
+pub fn new_box_string(field_name: &str, value: &str) -> Box<dyn Field> {
     Box::new(FieldString {
         field_name: field_name.to_owned(),
         value: value.to_owned(),
@@ -17,14 +17,14 @@ pub(crate) fn new_box_string(field_name: &str, value: &str) -> Box<dyn Field> {
 }
 
 #[allow(dead_code)]
-pub(crate) fn new_box_i64(field_name: &str, value: i64) -> Box<dyn Field> {
+pub fn new_box_i64(field_name: &str, value: i64) -> Box<dyn Field> {
     Box::new(FieldI64 {
         field_name: field_name.to_owned(),
         value,
     })
 }
 
-pub(crate) fn new_box_u64(field_name: &str, value: u64) -> Box<dyn Field> {
+pub fn new_box_u64(field_name: &str, value: u64) -> Box<dyn Field> {
     Box::new(FieldU64 {
         field_name: field_name.to_owned(),
         value,
@@ -32,7 +32,7 @@ pub(crate) fn new_box_u64(field_name: &str, value: u64) -> Box<dyn Field> {
 }
 
 #[derive(Debug)]
-pub(crate) struct FieldString {
+pub struct FieldString {
     field_name: String,
     value: String,
 }
@@ -52,7 +52,7 @@ impl Field for FieldString {
 }
 
 #[derive(Debug)]
-pub(crate) struct FieldI64 {
+pub struct FieldI64 {
     field_name: String,
     value: i64,
 }
@@ -72,7 +72,7 @@ impl Field for FieldI64 {
 }
 
 #[derive(Debug)]
-pub(crate) struct FieldU64 {
+pub struct FieldU64 {
     field_name: String,
     value: u64,
 }

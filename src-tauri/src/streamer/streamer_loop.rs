@@ -16,16 +16,16 @@ use super::{
     bus::Bus,
     message::{AppHandleAddr, Message, Uri},
     pipe::MESSAGE_NAME,
-    sys::{self, element::Element, gstreamer},
+    sys::{self, element::Element},
 };
 
 const UPDATE_POSITION_DURATION: Duration = Duration::from_millis(100);
 
-pub(crate) trait StreamerLoop: Debug {
+pub trait StreamerLoop: Debug {
     fn start_loop(&self, app_handle_addr: usize, uri: &str);
 }
 
-pub(crate) fn new_impl(bus: Arc<dyn Bus>, sender: mpsc::Sender<()>) -> impl StreamerLoop {
+pub fn new_impl(bus: Arc<dyn Bus>, sender: mpsc::Sender<()>) -> impl StreamerLoop {
     StreamerLoop_ { bus, sender }
 }
 
@@ -56,8 +56,7 @@ impl StreamerLoop for StreamerLoop_ {
 impl StreamerLoop_ {
     fn gst_loop(&self, app_handle_addr: usize, uri: &str) -> Option<(AppHandleAddr, Uri)> {
         let frontend_pipe = frontend::pipe::new_box(app_handle_addr);
-        gstreamer::init();
-        let element = gstreamer::parse_launch(uri).unwrap_or_else(|err| panic!("{err}"));
+        let element = Element::new(uri).unwrap_or_else(|err| panic!("{err}"));
         self.bus.set(element.get_bus());
 
         let mut data = Data {
@@ -185,7 +184,7 @@ impl StreamerLoop_ {
         println!("Position {} / {}", current, data.duration);
     }
 
-    pub(crate) fn set_state(&self, element: &Element, state: GstState) -> Result<(), String> {
+    pub fn set_state(&self, element: &Element, state: GstState) -> Result<(), String> {
         if let Err(err_code) = element.set_state(state) {
             return Err(format!("Error code on GStreamer set state: {err_code}"));
         }

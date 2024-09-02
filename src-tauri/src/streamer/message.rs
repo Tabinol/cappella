@@ -1,7 +1,7 @@
-use super::sys::{gstreamer, structure::Structure, structure_field};
+use super::sys::{structure::Structure, structure_field};
 
-pub(crate) type Uri = String;
-pub(crate) type AppHandleAddr = usize;
+pub type Uri = String;
+pub type AppHandleAddr = usize;
 
 const TITLE_FIELD: &str = "TITLE";
 const PTR_FIELD: &str = "PTR";
@@ -13,7 +13,7 @@ const MESSAGE_TITLE_VALUE_PAUSE: &str = "Pause";
 const MESSAGE_TITLE_VALUE_STOP: &str = "Stop";
 
 #[derive(Debug, Default)]
-pub(crate) enum Message {
+pub enum Message {
     #[default]
     None,
     Play(AppHandleAddr, Uri),
@@ -22,7 +22,7 @@ pub(crate) enum Message {
 }
 
 impl Message {
-    pub(crate) fn from_structure(structure: Structure) -> Result<Self, String> {
+    pub fn from_structure(structure: Structure) -> Result<Self, String> {
         let name = structure.get_string(TITLE_FIELD)?;
 
         match name.as_str() {
@@ -37,13 +37,13 @@ impl Message {
             other => Err(format!("the message name `{other}` is not supported.")),
         }
     }
-    pub(crate) fn to_structure(self, name: &str) -> Result<Structure, String> {
+    pub fn to_structure(self, name: &str) -> Result<Structure, String> {
         match self {
-            Message::None => gstreamer::structure_new(
+            Message::None => Structure::new(
                 name,
                 vec![(structure_field::new_box_string(TITLE_FIELD, MESSAGE_TITLE_VALUE_NONE))],
             ),
-            Self::Play(box_frontend_pipe_ptr, uri) => gstreamer::structure_new(
+            Self::Play(box_frontend_pipe_ptr, uri) => Structure::new(
                 name,
                 vec![
                     (structure_field::new_box_string(TITLE_FIELD, MESSAGE_TITLE_VALUE_PLAY)),
@@ -51,11 +51,11 @@ impl Message {
                     (structure_field::new_box_string(URI_FIELD, &uri)),
                 ],
             ),
-            Message::Pause => gstreamer::structure_new(
+            Message::Pause => Structure::new(
                 name,
                 vec![(structure_field::new_box_string(TITLE_FIELD, MESSAGE_TITLE_VALUE_PAUSE))],
             ),
-            Message::Stop => gstreamer::structure_new(
+            Message::Stop => Structure::new(
                 name,
                 vec![(structure_field::new_box_string(TITLE_FIELD, MESSAGE_TITLE_VALUE_STOP))],
             ),
