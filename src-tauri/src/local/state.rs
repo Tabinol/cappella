@@ -1,10 +1,10 @@
 use crate::player::front::Front;
 
-pub struct LocalState {
+pub struct State {
     player_front: Box<dyn Front>,
 }
 
-impl LocalState {
+impl State {
     pub fn new(player_front: Box<dyn Front>) -> Self {
         Self { player_front }
     }

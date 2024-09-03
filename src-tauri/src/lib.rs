@@ -1,27 +1,26 @@
 use ::tauri::{AppHandle, Manager, State, Window, WindowEvent};
-use tauri::local_state::LocalState;
 
 mod frontend;
+mod local;
 mod player;
 mod streamer;
-mod tauri;
 
 pub const MAIN_WINDOW_LABEL: &str = "main";
 
 #[::tauri::command]
-fn play(app_handle: AppHandle, state: State<LocalState>, uri: &str) {
+fn play(app_handle: AppHandle, state: State<local::state::State>, uri: &str) {
     let app_handle_box = Box::new(app_handle);
     let app_handle_addr = Box::into_raw(app_handle_box) as usize;
     state.player_front().play(app_handle_addr, uri);
 }
 
 #[::tauri::command]
-fn pause(state: State<LocalState>) {
+fn pause(state: State<local::state::State>) {
     state.player_front().pause();
 }
 
 #[::tauri::command]
-fn stop(state: State<LocalState>) {
+fn stop(state: State<local::state::State>) {
     state.player_front().stop();
 }
 
@@ -38,7 +37,7 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-fn init() -> LocalState {
+fn init() -> local::state::State {
     // Step 1 in alphabetical order
     let streamer_bus = streamer::bus::new_arc();
 
@@ -50,7 +49,7 @@ fn init() -> LocalState {
     let player_front = player::front::new_box(streamer_front, streamer_pipe);
 
     // Step 4 return
-    LocalState::new(player_front)
+    local::state::State::new(player_front)
 }
 
 fn on_window_event(window: &Window, event: &WindowEvent) {
@@ -66,7 +65,7 @@ fn on_window_event(window: &Window, event: &WindowEvent) {
 }
 
 fn end_streamer(app_handle: &AppHandle) {
-    let state = app_handle.state::<LocalState>();
+    let state = app_handle.state::<local::state::State>();
     state.player_front().stop();
     state.player_front().wait_until_end();
 }

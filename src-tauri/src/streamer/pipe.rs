@@ -1,11 +1,13 @@
 use std::{fmt::Debug, sync::Arc};
 
+use crate::local::app_error::AppError;
+
 use super::{bus::Bus, message::Message};
 
 pub const MESSAGE_NAME: &str = "APP_MSG";
 
 pub trait Pipe: Debug {
-    fn send(&self, message: Message) -> Result<(), String>;
+    fn send(&self, message: Message) -> Result<(), AppError>;
 }
 
 pub fn new_box(bus: Arc<dyn Bus>) -> Box<dyn Pipe> {
@@ -18,25 +20,19 @@ struct Pipe_ {
 }
 
 impl Pipe for Pipe_ {
-    fn send(&self, message: Message) -> Result<(), String> {
-        let bus_lock = self.bus.get_lock();
+    fn send(&self, message: Message) -> Result<(), AppError> {
+        let bus_lock = self.bus.get_lock()?;
 
         if let Some(bus) = bus_lock.as_ref() {
             let structure = message.to_structure(MESSAGE_NAME)?;
             let message = structure.message_new_application()?;
 
-            if bus.post(&message) {
-                return Ok(());
-            }
-
-            return Err(format!(
-                "The message receiver returns false. Message: {message:?}"
-            ));
+            return bus.post(&message);
         }
 
-        Err(format!(
+        Err(AppError::new(format!(
             "The bus is null or the thread is not started. Message: {message:?}"
-        ))
+        )))
     }
 }
 

@@ -10,7 +10,10 @@ use gstreamer_sys::{
     GST_STATE_PAUSED, GST_STATE_PLAYING,
 };
 
-use crate::frontend::{self};
+use crate::{
+    frontend::{self},
+    local::app_error::AppError,
+};
 
 use super::{
     bus::Bus,
@@ -48,16 +51,29 @@ impl StreamerLoop for StreamerLoop_ {
         let mut play = Some((app_handle_addr, uri.to_owned()));
 
         while let Some((app_handle_addr, uri)) = play {
-            play = self.gst_loop(app_handle_addr, &uri);
+            let result = self.gst_loop(app_handle_addr, &uri);
+
+            play = match result {
+                Ok(play_next) => play_next,
+                Err(err) => {
+                    eprintln!("Error from the GStreamer loop: {err}");
+                    None
+                }
+            }
         }
     }
 }
 
 impl StreamerLoop_ {
-    fn gst_loop(&self, app_handle_addr: usize, uri: &str) -> Option<(AppHandleAddr, Uri)> {
+    fn gst_loop(
+        &self,
+        app_handle_addr: usize,
+        uri: &str,
+    ) -> Result<Option<(AppHandleAddr, Uri)>, AppError> {
         let frontend_pipe = frontend::pipe::new_box(app_handle_addr);
         let element = Element::new(uri).unwrap_or_else(|err| panic!("{err}"));
-        self.bus.set(element.get_bus());
+        self.bus
+            .set(element.get_bus().expect("No bus for the GStreamer."));
 
         let mut data = Data {
             frontend_pipe,
@@ -69,7 +85,7 @@ impl StreamerLoop_ {
         let mut message = Message::None;
 
         while !matches!(message, Message::Play(_, _) | Message::Stop) {
-            let bus_lock = self.bus.get_lock();
+            let bus_lock = self.bus.get_lock()?;
 
             if let Some(bus) = bus_lock.as_ref() {
                 let msg_opt = bus.timed_pop_filtered(
@@ -82,7 +98,7 @@ impl StreamerLoop_ {
                 );
 
                 if let Some(msg) = msg_opt {
-                    message = self.handle_message(&mut data, &msg);
+                    message = self.handle_message(&mut data, &msg)?;
                 } else {
                     if data.is_playing {
                         self.update_position(&mut data);
@@ -97,41 +113,38 @@ impl StreamerLoop_ {
         self.sender.send(()).unwrap();
 
         if let Message::Play(app_handle_addr, uri) = message {
-            return Some((app_handle_addr, uri));
+            return Ok(Some((app_handle_addr, uri)));
         }
 
-        None
+        Ok(None)
     }
 
-    fn handle_message(&self, data: &mut Data, msg: &sys::message::Message) -> Message {
+    fn handle_message(
+        &self,
+        data: &mut Data,
+        msg: &sys::message::Message,
+    ) -> Result<Message, AppError> {
         match msg.type_() {
             GST_MESSAGE_ERROR => {
-                eprintln!("Error received from element.");
-                Message::Stop
+                return Err(AppError::new("Error received from element.".to_owned()));
             }
             GST_MESSAGE_EOS => {
                 // TODO remove?
                 println!("End-Of-Stream reached.");
-                Message::Stop
+                Ok(Message::Stop)
             }
             GST_MESSAGE_DURATION_CHANGED => {
                 data.duration = GST_CLOCK_TIME_NONE as i64;
-                Message::None
+                Ok(Message::None)
             }
             GST_MESSAGE_STATE_CHANGED => {
                 msg.state_changed();
-                Message::None
+                Ok(Message::None)
             }
-            GST_MESSAGE_APPLICATION => {
-                self.handle_application_message(data, msg)
-                    .unwrap_or_else(|err| {
-                        eprintln!("Error message on streamer message receiver: {err}");
-                        Message::None
-                    })
-            }
+            GST_MESSAGE_APPLICATION => self.handle_application_message(data, msg),
             gst_message_type => {
                 eprintln!("Unexpected message number received: {gst_message_type}");
-                Message::None
+                Ok(Message::None)
             }
         }
     }
@@ -140,20 +153,22 @@ impl StreamerLoop_ {
         &self,
         data: &mut Data,
         msg: &sys::message::Message,
-    ) -> Result<Message, String> {
+    ) -> Result<Message, AppError> {
         let structure = msg.structure();
         let name = structure.name();
 
         if name.ne(MESSAGE_NAME) {
-            return Err(format!("Streamer pipe message name error: {name}"));
+            return Err(AppError::new(format!(
+                "Streamer pipe message name error: {name}"
+            )));
         }
 
         let message = Message::from_structure(structure)?;
 
         match message {
-            Message::None => {
-                Err("Message with 'None' is an error due to a possible receive timeout.".to_owned())
-            }
+            Message::None => Err(AppError::new(
+                "Message with 'None' is an error due to a possible receive timeout.".to_owned(),
+            )),
             Message::Pause => {
                 let element = &data.element;
                 if data.is_playing {
@@ -184,11 +199,7 @@ impl StreamerLoop_ {
         println!("Position {} / {}", current, data.duration);
     }
 
-    pub fn set_state(&self, element: &Element, state: GstState) -> Result<(), String> {
-        if let Err(err_code) = element.set_state(state) {
-            return Err(format!("Error code on GStreamer set state: {err_code}"));
-        }
-
-        Ok(())
+    pub fn set_state(&self, element: &Element, state: GstState) -> Result<(), AppError> {
+        element.set_state(state)
     }
 }

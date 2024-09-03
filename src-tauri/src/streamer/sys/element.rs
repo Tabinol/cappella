@@ -8,8 +8,10 @@ use glib_sys::{gboolean, GFALSE};
 use gstreamer_sys::{
     gst_element_get_bus, gst_element_query_duration, gst_element_set_state, gst_init,
     gst_object_unref, gst_parse_launch, GstElement, GstFormat, GstObject, GstState,
-    GstStateChangeReturn, GST_STATE_CHANGE_SUCCESS, GST_STATE_NULL,
+    GST_STATE_CHANGE_SUCCESS, GST_STATE_NULL,
 };
+
+use crate::local::app_error::AppError;
 
 use super::bus::Bus;
 
@@ -17,7 +19,7 @@ use super::bus::Bus;
 pub struct Element(*mut GstElement);
 
 impl Element {
-    pub fn new(uri: &str) -> Result<Self, String> {
+    pub fn new(uri: &str) -> Result<Self, AppError> {
         let args = std::env::args()
             .map(|arg| CString::new(arg).unwrap())
             .collect::<Vec<CString>>();
@@ -29,13 +31,17 @@ impl Element {
 
         unsafe { gst_init(&mut (c_args.len() as i32), &mut c_args.as_mut_ptr()) };
 
-        let pipeline_description = CString::new(format!("playbin uri=\"{uri}\""))
-            .or_else(|_| Err(format!("Error on pipeline description conversion.")))?;
+        let pipeline_description =
+            CString::new(format!("playbin uri=\"{uri}\"")).or_else(|_| {
+                Err(AppError::new(
+                    "Error on pipeline description conversion.".to_owned(),
+                ))
+            })?;
 
         let element_ptr = unsafe { gst_parse_launch(pipeline_description.as_ptr(), null_mut()) };
 
         if element_ptr.is_null() {
-            return Err(format!("The pipeline is null."));
+            return Err(AppError::new("The pipeline is null.".to_owned()));
         }
 
         Ok(Self(element_ptr))
@@ -45,34 +51,33 @@ impl Element {
         self.0
     }
 
-    pub fn set_state(&self, state: GstState) -> Result<(), GstStateChangeReturn> {
+    pub fn set_state(&self, state: GstState) -> Result<(), AppError> {
         let state_change_return = unsafe { gst_element_set_state(self.get(), state) };
 
         if state_change_return != GST_STATE_CHANGE_SUCCESS {
-            return Err(state_change_return);
+            return Err(AppError::new(format!(
+                "State change return not success: {state_change_return}"
+            )));
         }
 
         Ok(())
     }
 
-    pub fn get_bus(&self) -> Bus {
+    pub fn get_bus(&self) -> Result<Bus, AppError> {
         let bus = unsafe { gst_element_get_bus(self.get()) };
-        if bus.is_null() {
-            panic!("The GStreamer bus is null.");
-        }
 
         Bus::new(bus)
     }
 
-    pub fn query_duration(&self, format: GstFormat) -> Result<i64, String> {
+    pub fn query_duration(&self, format: GstFormat) -> Result<i64, AppError> {
         self.query(|duration| unsafe { gst_element_query_duration(self.get(), format, duration) })
     }
 
-    pub fn query_position(&self, format: GstFormat) -> Result<i64, String> {
+    pub fn query_position(&self, format: GstFormat) -> Result<i64, AppError> {
         self.query(|position| unsafe { gst_element_query_duration(self.get(), format, position) })
     }
 
-    fn query<F>(&self, f: F) -> Result<i64, String>
+    fn query<F>(&self, f: F) -> Result<i64, AppError>
     where
         F: FnOnce(*mut i64) -> gboolean,
     {
@@ -80,7 +85,9 @@ impl Element {
         let result = f(&mut value);
 
         if result == GFALSE || value == -1 {
-            return Err("No result returned form the duration or position query.".to_owned());
+            return Err(AppError::new(
+                "No result returned form the duration or position query.".to_owned(),
+            ));
         }
 
         Ok(value)
@@ -101,18 +108,65 @@ impl Drop for Element {
 
 #[cfg(test)]
 mod test {
+    use gstreamer_sys::{GST_STATE_NULL, GST_STATE_PAUSED};
+
     use crate::streamer::sys::{
-        common_tests::{RcRefCellTestStructure, TestStructure},
+        common_tests::{ObjectType, RcRefCellTestStructure, TestStructure, UNASSIGNED},
         element::Element,
     };
 
     #[test]
     fn test_new() {
-        let test_structure = TestStructure::new_arc_mutex();
-        let uri = format!("{}", test_structure.test_nb());
+        let test_structure = TestStructure::new_arc_mutex_assigned();
+        let uri = test_structure.test_nb().to_string();
 
         let element = Element::new(&uri).unwrap();
 
         assert!(!element.0.is_null());
+    }
+
+    #[test]
+    fn test_set_test() {
+        let test_structure = TestStructure::new_arc_mutex_assigned();
+        let uri = test_structure.test_nb().to_string();
+
+        let element = Element::new(&uri).unwrap();
+        element.set_state(GST_STATE_PAUSED).unwrap();
+
+        assert!(test_structure.element_state() == GST_STATE_PAUSED);
+    }
+
+    #[test]
+    fn test_get_bus_ok() {
+        let test_structure = TestStructure::new_arc_mutex_assigned();
+        let uri = test_structure.test_nb().to_string();
+
+        let element = Element::new(&uri).unwrap();
+        let bus_res = element.get_bus();
+
+        assert!(bus_res.is_ok());
+    }
+
+    #[test]
+    fn test_get_bus_err() {
+        let uri = UNASSIGNED.to_string();
+
+        let element = Element::new(&uri).unwrap();
+        let bus_res = element.get_bus();
+
+        assert!(bus_res.is_err());
+    }
+
+    #[test]
+    fn test_drop() {
+        let test_structure = TestStructure::new_arc_mutex_assigned();
+        let uri = test_structure.test_nb().to_string();
+
+        {
+            let _element = Element::new(&uri).unwrap();
+        }
+
+        assert!(test_structure.element_state() == GST_STATE_NULL);
+        assert!(test_structure.is_unref(ObjectType::GstElement));
     }
 }

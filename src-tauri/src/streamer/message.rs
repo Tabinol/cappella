@@ -1,3 +1,5 @@
+use crate::local::app_error::AppError;
+
 use super::sys::{structure::Structure, structure_field};
 
 pub type Uri = String;
@@ -22,7 +24,7 @@ pub enum Message {
 }
 
 impl Message {
-    pub fn from_structure(structure: Structure) -> Result<Self, String> {
+    pub fn from_structure(structure: Structure) -> Result<Self, AppError> {
         let name = structure.get_string(TITLE_FIELD)?;
 
         match name.as_str() {
@@ -34,10 +36,12 @@ impl Message {
             }
             MESSAGE_TITLE_VALUE_PAUSE => Ok(Message::Pause),
             MESSAGE_TITLE_VALUE_STOP => Ok(Message::Stop),
-            other => Err(format!("the message name `{other}` is not supported.")),
+            default => Err(AppError::new(format!(
+                "the message name `{default}` is not supported."
+            ))),
         }
     }
-    pub fn to_structure(self, name: &str) -> Result<Structure, String> {
+    pub fn to_structure(self, name: &str) -> Result<Structure, AppError> {
         match self {
             Message::None => Structure::new(
                 name,

@@ -30,7 +30,10 @@ unsafe impl Sync for Front_ {}
 
 impl Front for Front_ {
     fn play(&self, app_handle_addr: usize, uri: &str) {
-        if self.streamer_front.is_running() {
+        if self.streamer_front.is_running().unwrap_or_else(|err| {
+            eprintln!("Error on check if running before play: {err}");
+            false
+        }) {
             self.streamer_pipe
                 .send(streamer::message::Message::Play(
                     app_handle_addr,
@@ -38,7 +41,9 @@ impl Front for Front_ {
                 ))
                 .unwrap_or_else(|err| eprintln!("Error on Play: {err}"));
         } else {
-            self.streamer_front.start(app_handle_addr, uri);
+            self.streamer_front
+                .start(app_handle_addr, uri)
+                .unwrap_or_else(|err| eprintln!("Error on GStreamer loop start: {err}"));
         }
     }
 
@@ -55,7 +60,9 @@ impl Front for Front_ {
     }
 
     fn wait_until_end(&self) {
-        self.streamer_front.wait_until_end();
+        self.streamer_front
+            .wait_until_end()
+            .unwrap_or_else(|err| eprintln!("Error on wait until end: {err}"));
     }
 }
 

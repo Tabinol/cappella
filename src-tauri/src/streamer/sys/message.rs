@@ -1,9 +1,11 @@
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 
 use gstreamer_sys::{
     gst_message_get_structure, gst_message_parse_state_changed, gst_message_unref, GstMessage,
     GstMessageType, GstState, GstStructure, GST_STATE_NULL,
 };
+
+use crate::local::app_error::AppError;
 
 use super::{state::State, structure::Structure};
 
@@ -11,8 +13,11 @@ use super::{state::State, structure::Structure};
 pub struct Message(*mut GstMessage);
 
 impl Message {
-    pub fn new(message: *mut GstMessage) -> Self {
-        Self(message)
+    pub fn new(message: *mut GstMessage) -> Result<Self, AppError> {
+        if message.is_null() {
+            return Err(AppError::new("The message pointer is null.".to_owned()));
+        }
+        Ok(Self(message))
     }
 
     pub fn get(&self) -> *mut GstMessage {
@@ -44,6 +49,12 @@ impl Message {
         };
 
         State::new(old_state, new_state, pending_state)
+    }
+}
+
+impl Display for Message {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "message_ptr: {:?}", self.0)
     }
 }
 
