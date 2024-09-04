@@ -28,12 +28,12 @@ pub struct Structure {
 
 impl Structure {
     pub fn new(name: &str, fields: Vec<Box<dyn structure_field::Field>>) -> Result<Self, AppError> {
-        let c_name = CString::new(name).unwrap();
+        let c_name = CString::new(name)?;
         let mut c_fields = Vec::<CField>::new();
         let mut c_values = VecDeque::<*const c_char>::new();
 
         for field in fields {
-            let field_name = CString::new(field.field_name()).unwrap();
+            let field_name = CString::new(field.field_name())?;
             let g_type = field.g_type();
             let value = field.c_value();
             c_values.push_back(field_name.as_ptr());
@@ -43,7 +43,9 @@ impl Structure {
         }
 
         c_values.push_back(null());
-        let first_field = c_values.pop_front().unwrap();
+        let first_field = c_values.pop_front().ok_or_else(|| {
+            AppError::new("The first field (name) of the structure is empty.".to_owned())
+        })?;
         let ptr = unsafe { gst_structure_new(c_name.as_ptr(), first_field, c_values) };
 
         if ptr.is_null() {
@@ -59,22 +61,21 @@ impl Structure {
         })
     }
 
-    pub fn new_from_message(ptr: *mut GstStructure) -> Self {
+    pub fn new_from_message(ptr: *mut GstStructure) -> Result<Self, AppError> {
         if ptr.is_null() {
-            panic!("The message structure is null.");
+            Err(AppError::new("The message structure is null.".to_owned()))?;
         }
 
         let name_ptr = unsafe { gst_structure_get_name(ptr) };
         let name = unsafe { CString::from_raw(name_ptr as *mut c_char) }
-            .to_str()
-            .unwrap()
+            .to_str()?
             .to_owned();
 
-        Self {
+        Ok(Self {
             ptr,
             name,
             _memory_store: None,
-        }
+        })
     }
 
     pub fn get(&self) -> *mut GstStructure {
@@ -104,8 +105,7 @@ impl Structure {
         }
 
         Ok(unsafe { CString::from_raw(value_ptr as *mut c_char) }
-            .to_str()
-            .unwrap()
+            .to_str()?
             .to_owned())
     }
 
@@ -147,3 +147,6 @@ impl Structure {
         Ok(CString::new(field_name)?)
     }
 }
+
+#[cfg(test)]
+mod tests {}

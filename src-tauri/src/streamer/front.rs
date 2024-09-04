@@ -2,16 +2,15 @@ use std::{
     fmt::Debug,
     sync::{
         mpsc::{self},
-        Arc, Mutex,
+        Arc,
     },
     thread::{self, JoinHandle},
     time::Duration,
 };
 
-use crate::local::{
-    app_error::AppError,
-    mutex_lock_timeout::{MutexLockTimeout, LOCK_STANDARD_TIMEOUT_DURATION},
-};
+use parking_lot::Mutex;
+
+use crate::local::{app_error::AppError, mutex_lock_timeout::MutexLockTimeout};
 
 use super::{
     bus::Bus,
@@ -44,9 +43,7 @@ struct Front_ {
 
 impl Front for Front_ {
     fn start(&self, app_handle_addr: usize, uri: &str) -> Result<(), AppError> {
-        let mut join_handle_lock = self
-            .join_handle
-            .try_lock_timeout(LOCK_STANDARD_TIMEOUT_DURATION)?;
+        let mut join_handle_lock = self.join_handle.try_lock_default_duration()?;
 
         if join_handle_lock.is_some() {
             return Err(AppError::new("GStreamer loop already started".to_owned()));
@@ -55,9 +52,7 @@ impl Front for Front_ {
         let bus = self.bus.clone();
         let uri_owned = uri.to_owned();
         let (sender, receiver) = mpsc::channel::<()>();
-        *self
-            .receiver
-            .try_lock_timeout(LOCK_STANDARD_TIMEOUT_DURATION)? = Some(receiver);
+        *self.receiver.try_lock_default_duration()? = Some(receiver);
 
         let join_handle =
             thread::Builder::new()
@@ -72,46 +67,36 @@ impl Front for Front_ {
     }
 
     fn is_running(&self) -> Result<bool, AppError> {
-        let mut join_handle_lock = self
-            .join_handle
-            .try_lock_timeout(LOCK_STANDARD_TIMEOUT_DURATION)?;
+        let mut join_handle_lock = self.join_handle.try_lock_default_duration()?;
 
-        if join_handle_lock.is_none() {
-            return Ok(false);
+        if let Some(join_handle) = &*join_handle_lock {
+            if join_handle.is_finished() {
+                *join_handle_lock = None;
+                return Ok(false);
+            }
+            return Ok(true);
         }
 
-        if join_handle_lock.as_ref().unwrap().is_finished() {
-            *join_handle_lock = None;
-            return Ok(false);
-        }
-
-        Ok(true)
+        Ok(false)
     }
 
     fn wait_until_end(&self) -> Result<(), AppError> {
-        let mut join_handle_lock = self
-            .join_handle
-            .try_lock_timeout(LOCK_STANDARD_TIMEOUT_DURATION)?;
+        let mut join_handle_lock = self.join_handle.try_lock_default_duration()?;
 
-        if join_handle_lock.is_some() {
+        if let Some(join_handle) = join_handle_lock.take() {
             let receiver = self
                 .receiver
-                .try_lock_timeout(LOCK_STANDARD_TIMEOUT_DURATION)?
+                .try_lock_default_duration()?
                 .take()
-                .unwrap();
-            let join_handle = join_handle_lock.take().unwrap();
-            let result = receiver.recv_timeout(STOP_TIMEOUT_DURATION).or_else(|_| {
-                eprintln!(
-                    "GStreamer wait stop timeout afert `{}` seconds.",
-                    STOP_TIMEOUT_DURATION.as_secs()
-                );
-                Err(())
-            });
-
-            if result.is_ok() {
-                join_handle_lock.take().unwrap();
-                join_handle.join().unwrap();
-            }
+                .ok_or_else(|| {
+                    AppError::new("The receiver doesn't exist for the parent thread.".to_owned())
+                })?;
+            receiver.recv_timeout(STOP_TIMEOUT_DURATION)?;
+            join_handle.join().or_else(|err| {
+                Err(AppError::new(format!(
+                    "Error on GStreamer thread join handle: {err:?}."
+                )))
+            })?;
         }
 
         Ok(())

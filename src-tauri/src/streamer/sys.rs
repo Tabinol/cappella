@@ -8,40 +8,52 @@ pub mod structure_field;
 #[cfg(test)]
 mod common_tests {
     use std::{
-        collections::{hash_map::Entry, HashMap},
-        ffi::{c_char, c_int, CStr},
+        collections::{HashMap, HashSet},
+        ffi::{c_char, c_int, CStr, CString},
         ptr::{self, null_mut},
         sync::{
             atomic::{AtomicI64, Ordering},
-            Arc, Mutex, OnceLock,
+            Arc, OnceLock,
         },
     };
 
     use glib_sys::{gboolean, GError, GFALSE};
     use gstreamer_sys::{
         GstBus, GstClockTime, GstElement, GstMessage, GstMessageType, GstObject, GstState,
-        GstStateChangeReturn, GST_STATE_CHANGE_SUCCESS, GST_STATE_NULL,
+        GstStateChangeReturn, GstStructure, GST_STATE_CHANGE_SUCCESS, GST_STATE_NULL,
+        GST_STATE_PAUSED, GST_STATE_PLAYING,
     };
+    use parking_lot::{Mutex, MutexGuard};
 
-    use crate::local::mutex_lock_timeout::{MutexLockTimeout, LOCK_STANDARD_TIMEOUT_DURATION};
+    use crate::local::mutex_lock_timeout::MutexLockTimeout;
 
+    pub const STRUCTURE_NAME: &str = "STRUCTURE_NAME";
     pub const UNASSIGNED: i64 = -1;
 
     static TEST_COUNTER: AtomicI64 = AtomicI64::new(0);
     static TEST_NB_TO_TEST_STRUCTURE: OnceLock<Mutex<HashMap<i64, Arc<Mutex<TestStructure>>>>> =
         OnceLock::new();
 
-    #[derive(Debug, Eq, Hash, PartialEq)]
-    pub enum ObjectType {
+    #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+    pub enum TestObjectType {
         GstBus,
         GstElement,
-        GstMesage,
+        GstMessage,
+        GstStructure,
     }
 
-    #[derive(Debug)]
-    pub struct Object {
+    #[derive(Clone, Debug)]
+    pub struct TestObject {
+        test_object_type: TestObjectType,
         test_structure: Arc<Mutex<TestStructure>>,
-        is_unref: bool,
+    }
+
+    impl TestObject {
+        pub fn from_raw_ptr(raw_ptr: *const Self) -> Self {
+            assert!(!raw_ptr.is_null());
+
+            unsafe { (*raw_ptr).clone() }
+        }
     }
 
     pub trait RcRefCellTestStructure {
@@ -49,16 +61,20 @@ mod common_tests {
         fn faked_gst_bus(&self) -> *mut GstBus;
         fn faked_gst_element(&self) -> *mut GstElement;
         fn faked_gst_message(&self) -> *mut GstMessage;
+        fn faked_gst_structure(&self) -> *mut GstStructure;
         fn element_state(&self) -> GstState;
         fn set_gst_bus_post_return(&self, value: gboolean);
         fn set_pop_message(&self, value: bool);
-        fn is_unref(&self, object_type: ObjectType) -> bool;
+        fn is_unref(&self, test_object_type: TestObjectType) -> bool;
+        fn try_lock_unwrap(&self) -> MutexGuard<TestStructure>;
     }
 
     #[derive(Debug)]
     pub struct TestStructure {
         test_nb: i64,
-        type_to_object: HashMap<ObjectType, Object>,
+        type_to_object: HashMap<TestObjectType, TestObject>,
+        c_strings: Vec<CString>,
+        unrefs: HashSet<TestObjectType>,
         element_state: GstState,
         gst_bus_post_return: gboolean,
         pop_message: bool,
@@ -69,6 +85,8 @@ mod common_tests {
             Arc::new(Mutex::new(Self {
                 test_nb,
                 type_to_object: HashMap::new(),
+                c_strings: Vec::new(),
+                unrefs: HashSet::new(),
                 element_state: GST_STATE_NULL,
                 gst_bus_post_return: GFALSE,
                 pop_message: false,
@@ -81,7 +99,7 @@ mod common_tests {
             let test_nb_to_test_structure_mutex =
                 TEST_NB_TO_TEST_STRUCTURE.get_or_init(|| Mutex::new(HashMap::new()));
             let mut test_nb_to_test_structure_lock = test_nb_to_test_structure_mutex
-                .try_lock_timeout(LOCK_STANDARD_TIMEOUT_DURATION)
+                .try_lock_default_duration()
                 .unwrap();
             test_nb_to_test_structure_lock.insert(test_nb, Arc::clone(&self_arc_mutex));
 
@@ -92,94 +110,75 @@ mod common_tests {
             TEST_NB_TO_TEST_STRUCTURE
                 .get()
                 .expect("No test structure created.")
-                .try_lock_timeout(LOCK_STANDARD_TIMEOUT_DURATION)
+                .try_lock_default_duration()
                 .unwrap()
                 .get(&test_nb)
                 .expect("the test structure is not created for this test number.")
                 .clone()
         }
+
+        pub fn from_raw_ptr(raw_ptr: *const TestObject) -> Arc<Mutex<TestStructure>> {
+            assert!(!raw_ptr.is_null());
+
+            TestObject::from_raw_ptr(raw_ptr).test_structure.clone()
+        }
+
+        fn faked_gst<G>(
+            arc_mutex_self: &Arc<Mutex<Self>>,
+            test_object_type: TestObjectType,
+        ) -> *mut G {
+            let mut self_lock = arc_mutex_self.try_lock_default_duration().unwrap();
+            let test_object = self_lock
+                .type_to_object
+                .entry(test_object_type.clone())
+                .or_insert(TestObject {
+                    test_object_type: test_object_type.clone(),
+                    test_structure: arc_mutex_self.clone(),
+                });
+
+            ptr::addr_of!(*test_object) as *mut G
+        }
     }
 
     impl RcRefCellTestStructure for Arc<Mutex<TestStructure>> {
         fn test_nb(&self) -> i64 {
-            self.try_lock_timeout(LOCK_STANDARD_TIMEOUT_DURATION)
-                .unwrap()
-                .test_nb
+            self.try_lock_unwrap().test_nb
         }
 
         fn faked_gst_bus(&self) -> *mut GstBus {
-            let mut self_lock = self
-                .try_lock_timeout(LOCK_STANDARD_TIMEOUT_DURATION)
-                .unwrap();
-            let object = self_lock
-                .type_to_object
-                .entry(ObjectType::GstBus)
-                .or_insert(Object {
-                    test_structure: Arc::clone(self),
-                    is_unref: false,
-                });
-
-            ptr::addr_of_mut!(*object) as *mut GstBus
+            TestStructure::faked_gst(self, TestObjectType::GstBus)
         }
 
         fn faked_gst_element(&self) -> *mut GstElement {
-            let mut self_lock = self
-                .try_lock_timeout(LOCK_STANDARD_TIMEOUT_DURATION)
-                .unwrap();
-            let object = self_lock
-                .type_to_object
-                .entry(ObjectType::GstElement)
-                .or_insert(Object {
-                    test_structure: Arc::clone(self),
-                    is_unref: false,
-                });
-
-            ptr::addr_of_mut!(*object) as *mut GstElement
+            TestStructure::faked_gst(self, TestObjectType::GstElement)
         }
 
         fn faked_gst_message(&self) -> *mut GstMessage {
-            let mut self_lock = self
-                .try_lock_timeout(LOCK_STANDARD_TIMEOUT_DURATION)
-                .unwrap();
-            let object = self_lock
-                .type_to_object
-                .entry(ObjectType::GstMesage)
-                .or_insert(Object {
-                    test_structure: Arc::clone(self),
-                    is_unref: false,
-                });
+            TestStructure::faked_gst(self, TestObjectType::GstMessage)
+        }
 
-            ptr::addr_of_mut!(*object) as *mut GstMessage
+        fn faked_gst_structure(&self) -> *mut GstStructure {
+            TestStructure::faked_gst(self, TestObjectType::GstStructure)
         }
 
         fn element_state(&self) -> GstState {
-            self.try_lock_timeout(LOCK_STANDARD_TIMEOUT_DURATION)
-                .unwrap()
-                .element_state
+            self.try_lock_unwrap().element_state
         }
 
         fn set_gst_bus_post_return(&self, value: gboolean) {
-            self.try_lock_timeout(LOCK_STANDARD_TIMEOUT_DURATION)
-                .unwrap()
-                .gst_bus_post_return = value;
+            self.try_lock_unwrap().gst_bus_post_return = value;
         }
 
         fn set_pop_message(&self, value: bool) {
-            self.try_lock_timeout(LOCK_STANDARD_TIMEOUT_DURATION)
-                .unwrap()
-                .pop_message = value;
+            self.try_lock_unwrap().pop_message = value;
         }
 
-        fn is_unref(&self, object_type: ObjectType) -> bool {
-            match self
-                .try_lock_timeout(LOCK_STANDARD_TIMEOUT_DURATION)
-                .unwrap()
-                .type_to_object
-                .entry(object_type)
-            {
-                Entry::Occupied(object) => object.get().is_unref,
-                Entry::Vacant(_) => false,
-            }
+        fn is_unref(&self, test_object_type: TestObjectType) -> bool {
+            self.try_lock_unwrap().unrefs.contains(&test_object_type)
+        }
+
+        fn try_lock_unwrap(&self) -> MutexGuard<TestStructure> {
+            self.try_lock_default_duration().unwrap()
         }
     }
 
@@ -188,13 +187,11 @@ mod common_tests {
         assert!(!bus.is_null());
         assert!(!message.is_null());
 
-        let object = unsafe { &*(bus as *mut Object) };
+        let test_structure = TestStructure::from_raw_ptr(bus as *const TestObject);
 
-        object
-            .test_structure
-            .try_lock_timeout(LOCK_STANDARD_TIMEOUT_DURATION)
-            .unwrap()
-            .gst_bus_post_return
+        let result = test_structure.try_lock_unwrap().gst_bus_post_return;
+
+        result
     }
 
     #[no_mangle]
@@ -205,24 +202,9 @@ mod common_tests {
     ) -> *mut GstMessage {
         assert!(!bus.is_null());
 
-        let object = unsafe { &*(bus as *mut Object) };
-        let test_structure = object.test_structure.clone();
+        let test_structure = TestStructure::from_raw_ptr(bus as *const TestObject);
 
-        assert!(
-            test_structure
-                .try_lock_timeout(LOCK_STANDARD_TIMEOUT_DURATION)
-                .unwrap()
-                .type_to_object
-                .get(&ObjectType::GstMesage)
-                .is_none(),
-            "Gst Message already inserted."
-        );
-
-        if test_structure
-            .try_lock_timeout(LOCK_STANDARD_TIMEOUT_DURATION)
-            .unwrap()
-            .pop_message
-        {
+        if test_structure.try_lock_unwrap().pop_message {
             return test_structure.faked_gst_message();
         }
 
@@ -233,8 +215,7 @@ mod common_tests {
     pub extern "C" fn gst_element_get_bus(element: *mut GstElement) -> *mut GstBus {
         assert!(!element.is_null());
 
-        let object = unsafe { &*(element as *mut Object) };
-        let test_structure = object.test_structure.clone();
+        let test_structure = TestStructure::from_raw_ptr(element as *const TestObject);
 
         if test_structure.test_nb() == UNASSIGNED {
             return null_mut();
@@ -248,12 +229,8 @@ mod common_tests {
         element: *mut GstElement,
         state: GstState,
     ) -> GstStateChangeReturn {
-        let object_ref = unsafe { &mut *(element as *mut Object) };
-        object_ref
-            .test_structure
-            .try_lock_timeout(LOCK_STANDARD_TIMEOUT_DURATION)
-            .unwrap()
-            .element_state = state;
+        let test_structure = TestStructure::from_raw_ptr(element as *const TestObject);
+        test_structure.try_lock_unwrap().element_state = state;
 
         GST_STATE_CHANGE_SUCCESS
     }
@@ -262,21 +239,61 @@ mod common_tests {
     pub extern "C" fn gst_init(_argc: *mut c_int, _argv: *mut *mut *mut c_char) {}
 
     #[no_mangle]
+    pub fn gst_message_parse_state_changed(
+        message: *mut GstMessage,
+        oldstate: *mut GstState,
+        newstate: *mut GstState,
+        pending: *mut GstState,
+    ) {
+        assert!(!message.is_null());
+
+        unsafe {
+            *oldstate = GST_STATE_PAUSED;
+            *newstate = GST_STATE_PLAYING;
+            *pending = GST_STATE_NULL;
+        }
+    }
+
+    #[no_mangle]
+    pub extern "C" fn gst_message_get_structure(message: *mut GstMessage) -> *const GstStructure {
+        assert!(!message.is_null());
+
+        let test_structure = TestStructure::from_raw_ptr(message as *const TestObject);
+
+        if test_structure.test_nb() == UNASSIGNED {
+            return null_mut();
+        }
+
+        test_structure.faked_gst_structure()
+    }
+
+    #[no_mangle]
     pub extern "C" fn gst_message_unref(msg: *mut GstMessage) {
         assert!(!msg.is_null());
 
-        let object_ref = unsafe { &mut *(msg as *mut Object) };
-        assert!(!object_ref.is_unref);
-        object_ref.is_unref = true;
+        let test_structure = TestStructure::from_raw_ptr(msg as *const TestObject);
+        assert!(
+            test_structure
+                .try_lock_unwrap()
+                .unrefs
+                .insert(TestObjectType::GstMessage),
+            "`GstMessage` already unref."
+        );
     }
 
     #[no_mangle]
     pub extern "C" fn gst_object_unref(object: *mut GstObject) {
         assert!(!object.is_null());
 
-        let object_ref = unsafe { &mut *(object as *mut Object) };
-        assert!(!object_ref.is_unref);
-        object_ref.is_unref = true;
+        let test_object = TestObject::from_raw_ptr(object as *const TestObject);
+        let test_object_type = test_object.test_object_type.clone();
+        let test_structure = test_object.test_structure.clone();
+        let mut test_structure_lock = test_structure.try_lock_unwrap();
+
+        assert!(
+            test_structure_lock.unrefs.insert(test_object_type.clone()),
+            "`{test_object_type:?}` already unref."
+        );
     }
 
     #[no_mangle]
@@ -302,5 +319,20 @@ mod common_tests {
         };
 
         test_structure.faked_gst_element()
+    }
+
+    #[no_mangle]
+    pub extern "C" fn gst_structure_get_name(structure: *const GstStructure) -> *const c_char {
+        assert!(!structure.is_null());
+
+        let test_object = TestObject::from_raw_ptr(structure as *const TestObject);
+        let test_structure = test_object.test_structure.clone();
+        let mut test_structure_lock = test_structure.try_lock_unwrap();
+
+        let c_string_name = CString::new(STRUCTURE_NAME).unwrap();
+        let c_string_name_ptr = c_string_name.as_ptr();
+        test_structure_lock.c_strings.push(c_string_name);
+
+        c_string_name_ptr
     }
 }

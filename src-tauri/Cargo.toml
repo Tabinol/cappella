@@ -12,16 +12,17 @@ name = "cappella_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [build-dependencies]
-tauri-build = { version = "2.0.0-rc.6", features = [] }
+tauri-build = { version = "2.0.0-rc.7", features = [] }
 
 [dependencies]
-glib-sys = { version = "0" }
-gobject-sys = { version = "0" }
-gstreamer-sys = { version = "0", features = ["v1_18_3"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tauri = { version = "2.0.0-rc.6", features = [] }
-tauri-plugin-shell = "2.0.0-rc.2"
+glib-sys = { version = "0.20.2" }
+gobject-sys = { version = "0.20.1" }
+gstreamer-sys = { version = "0.23.0", features = ["v1_18_3"] }
+parking_lot = "0.12.3"
+serde = { version = "1.0.209", features = ["derive"] }
+serde_json = "1.0.127"
+tauri = { version = "2.0.0-rc.8", features = [] }
+tauri-plugin-shell = "2.0.0-rc.3"
 
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!

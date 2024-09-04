@@ -72,8 +72,7 @@ impl StreamerLoop_ {
     ) -> Result<Option<(AppHandleAddr, Uri)>, AppError> {
         let frontend_pipe = frontend::pipe::new_box(app_handle_addr);
         let element = Element::new(uri).unwrap_or_else(|err| panic!("{err}"));
-        self.bus
-            .set(element.get_bus().expect("No bus for the GStreamer."));
+        self.bus.set(element.get_bus()?)?;
 
         let mut data = Data {
             frontend_pipe,
@@ -95,7 +94,7 @@ impl StreamerLoop_ {
                         | GST_MESSAGE_EOS
                         | GST_MESSAGE_DURATION_CHANGED
                         | GST_MESSAGE_APPLICATION,
-                );
+                )?;
 
                 if let Some(msg) = msg_opt {
                     message = self.handle_message(&mut data, &msg)?;
@@ -154,7 +153,7 @@ impl StreamerLoop_ {
         data: &mut Data,
         msg: &sys::message::Message,
     ) -> Result<Message, AppError> {
-        let structure = msg.structure();
+        let structure = msg.structure()?;
         let name = structure.name();
 
         if name.ne(MESSAGE_NAME) {

@@ -37,16 +37,20 @@ impl Bus {
         Ok(())
     }
 
-    pub fn timed_pop_filtered(&self, timeout: Duration, type_: GstMessageType) -> Option<Message> {
+    pub fn timed_pop_filtered(
+        &self,
+        timeout: Duration,
+        type_: GstMessageType,
+    ) -> Result<Option<Message>, AppError> {
         let message_ptr = unsafe {
-            gst_bus_timed_pop_filtered(self.get(), timeout.as_nanos().try_into().unwrap(), type_)
+            gst_bus_timed_pop_filtered(self.get(), timeout.as_nanos().try_into()?, type_)
         };
 
         if !message_ptr.is_null() {
-            return Some(Message::new(message_ptr).unwrap());
+            return Ok(Some(Message::new(message_ptr)?));
         }
 
-        None
+        Ok(None)
     }
 }
 
@@ -58,17 +62,33 @@ impl Drop for Bus {
 
 #[cfg(test)]
 mod test {
-    use std::time::Duration;
+    use std::{ptr::null_mut, time::Duration};
 
     use glib_sys::{GFALSE, GTRUE};
     use gstreamer_sys::GST_MESSAGE_APPLICATION;
 
-    use crate::streamer::sys::{
-        common_tests::{ObjectType, RcRefCellTestStructure, TestStructure},
-        message::Message,
+    use crate::streamer::sys::common_tests::{
+        RcRefCellTestStructure, TestObjectType, TestStructure, UNASSIGNED,
     };
+    use crate::streamer::sys::message::Message;
 
     use super::Bus;
+
+    #[test]
+    fn test_new_ok() {
+        let test_structure = TestStructure::new_arc_mutex(UNASSIGNED);
+
+        let bus_res = Bus::new(test_structure.faked_gst_bus());
+
+        assert!(bus_res.is_ok());
+    }
+
+    #[test]
+    fn test_new_err() {
+        let bus_res = Bus::new(null_mut());
+
+        assert!(bus_res.is_err());
+    }
 
     #[test]
     fn test_post_ok() {
@@ -102,7 +122,7 @@ mod test {
         test_structure.set_pop_message(true);
         let message = bus.timed_pop_filtered(Duration::from_secs(1), GST_MESSAGE_APPLICATION);
 
-        assert!(message.is_some(), "No message is returned.")
+        assert!(message.unwrap().is_some(), "No message is returned.")
     }
 
     #[test]
@@ -113,7 +133,7 @@ mod test {
         test_structure.set_pop_message(false);
         let message = bus.timed_pop_filtered(Duration::from_secs(1), GST_MESSAGE_APPLICATION);
 
-        assert!(message.is_none(), "No message should be popped.")
+        assert!(message.unwrap().is_none(), "No message should be popped.")
     }
 
     #[test]
@@ -124,7 +144,7 @@ mod test {
         }
 
         assert!(
-            test_structure.is_unref(ObjectType::GstBus),
+            test_structure.is_unref(TestObjectType::GstBus),
             "The bus is not unref."
         )
     }

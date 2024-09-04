@@ -1,64 +1,41 @@
-use std::{
-    sync::{Mutex, MutexGuard},
-    thread::{self},
-    time::{Duration, SystemTime},
-};
+use std::time::Duration;
+
+use parking_lot::{Mutex, MutexGuard};
 
 use super::app_error::AppError;
 
-pub const LOCK_STANDARD_TIMEOUT_DURATION: Duration = Duration::from_secs(5);
-const WAIT_SLEEP_DURATION: Duration = Duration::from_millis(10);
+const LOCK_DEFAULT_TIMEOUT_DURATION: Duration = Duration::from_secs(5);
+const TIMEOUT_ERROR_MESSAGE: &str = "Lock timeout.";
 
-pub trait MutexLockTimeout<T>
-where
-    T: ?Sized,
-{
-    fn try_lock_timeout(&self, duration: Duration) -> Result<MutexGuard<'_, T>, AppError>;
+pub trait MutexLockTimeout<T> {
+    fn try_lock_for(&self, duration: Duration) -> Result<MutexGuard<T>, AppError>;
+    fn try_lock_default_duration(&self) -> Result<MutexGuard<T>, AppError>;
 }
 
 impl<T> MutexLockTimeout<T> for Mutex<T> {
-    fn try_lock_timeout(&self, duration: Duration) -> Result<MutexGuard<'_, T>, AppError> {
-        if self.is_poisoned() {
-            return Err(AppError::new("The lock is poisoned.".to_owned()));
-        }
+    fn try_lock_default_duration(&self) -> Result<MutexGuard<T>, AppError> {
+        MutexLockTimeout::try_lock_for(self, LOCK_DEFAULT_TIMEOUT_DURATION)
+    }
 
-        let start_time = SystemTime::now();
-
-        loop {
-            let result = self.try_lock();
-
-            if result.is_ok() {
-                return Ok(result?);
-            }
-
-            let duration_since_res = SystemTime::now().duration_since(start_time);
-
-            if duration_since_res.is_err() || duration_since_res.unwrap() > duration {
-                return Err(AppError::new(
-                    "Try lock duration timeout or error in the duration.".to_owned(),
-                ));
-            }
-
-            thread::sleep(WAIT_SLEEP_DURATION);
-        }
+    fn try_lock_for(&self, duration: Duration) -> Result<MutexGuard<T>, AppError> {
+        self.try_lock_for(duration)
+            .ok_or_else(|| AppError::new(TIMEOUT_ERROR_MESSAGE.to_owned()))
     }
 }
 
 #[cfg(test)]
 mod test {
-    use std::{sync::Mutex, time::Duration};
+    use std::time::Duration;
 
-    use crate::local::mutex_lock_timeout::LOCK_STANDARD_TIMEOUT_DURATION;
+    use parking_lot::Mutex;
 
-    use super::MutexLockTimeout;
+    use crate::local::mutex_lock_timeout::MutexLockTimeout;
 
     #[test]
     fn test_no_timeout() {
         let element = Mutex::new(1_i8);
 
-        let result = *element
-            .try_lock_timeout(LOCK_STANDARD_TIMEOUT_DURATION)
-            .unwrap();
+        let result = *element.try_lock_default_duration().unwrap();
 
         assert_eq!(result, 1);
     }
@@ -68,9 +45,9 @@ mod test {
         let element = Mutex::new(1_i8);
         let duration = Duration::from_secs(1);
 
-        let _lock = element.lock().unwrap();
+        let _lock = element.lock();
 
-        let result_res = element.try_lock_timeout(duration);
+        let result_res = MutexLockTimeout::try_lock_for(&element, duration);
 
         assert!(result_res.is_err());
     }

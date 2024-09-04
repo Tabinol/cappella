@@ -20,9 +20,11 @@ pub struct Element(*mut GstElement);
 
 impl Element {
     pub fn new(uri: &str) -> Result<Self, AppError> {
-        let args = std::env::args()
-            .map(|arg| CString::new(arg).unwrap())
-            .collect::<Vec<CString>>();
+        let mut args = Vec::<CString>::new();
+
+        for arg in std::env::args().into_iter() {
+            args.push(CString::new(arg)?);
+        }
 
         let mut c_args = args
             .iter()
@@ -107,11 +109,11 @@ impl Drop for Element {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use gstreamer_sys::{GST_STATE_NULL, GST_STATE_PAUSED};
 
     use crate::streamer::sys::{
-        common_tests::{ObjectType, RcRefCellTestStructure, TestStructure, UNASSIGNED},
+        common_tests::{RcRefCellTestStructure, TestObjectType, TestStructure, UNASSIGNED},
         element::Element,
     };
 
@@ -167,6 +169,6 @@ mod test {
         }
 
         assert!(test_structure.element_state() == GST_STATE_NULL);
-        assert!(test_structure.is_unref(ObjectType::GstElement));
+        assert!(test_structure.is_unref(TestObjectType::GstElement));
     }
 }
